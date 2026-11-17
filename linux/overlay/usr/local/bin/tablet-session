@@ -1,0 +1,68 @@
+#!/bin/sh
+# The Linux desktop session on the tablet. tb-linuxd starts it as user
+# "tablet" inside the chroot; it ends when tb-linuxd ends it (both volume keys
+# on the tablet) and takes every process of the user with it.
+#
+# X runs on the framebuffer, only for this user: no TCP, no abstract socket
+# (that one would be reachable from Android, outside the chroot), and a
+# cookie. Window manager: matchbox (one program at a time, full screen),
+# start screen: tablet-launcher, keyboard: onboard (tablet-onboard).
+set -u
+
+ROTATION=${ROTATION:-counterclockwise}
+case "$ROTATION" in counterclockwise|clockwise|none) ;; *) ROTATION=counterclockwise ;; esac
+
+export DISPLAY=:0
+export XAUTHORITY="$HOME/.Xauthority"
+export XDG_RUNTIME_DIR="/tmp/runtime-$USER"
+# GTK 3 programs report focus changes on the accessibility bus by themselves
+# (unless NO_AT_BRIDGE is set); onboard uses that to appear at text fields
+cd "$HOME" || exit 1
+mkdir -p "$HOME/.local/share/xorg" "$XDG_RUNTIME_DIR"
+chmod 700 "$XDG_RUNTIME_DIR"
+# what comes after this session: tablet-launcher writes "remote" here for its
+# "Remote control" tile; then the session ends with 50 and tb-home opens the
+# remote control (/tmp outlives a session, so clear it first)
+NEXT="$XDG_RUNTIME_DIR/next"
+rm -f "$NEXT"
+
+rm -f "$XAUTHORITY"
+umask 077
+xauth -q add :0 . "$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')"
+umask 022
+
+# libtablet-fbfix.so: the screen driver only accepts its own virtual size (see its source)
+LD_PRELOAD=/usr/local/lib/tablet/libtablet-fbfix.so \
+Xorg :0 -config "tablet-$ROTATION.conf" -nolisten tcp -nolisten local -auth "$XAUTHORITY" \
+    -noreset -dpi 130 &   # log (not root): ~/.local/share/xorg/Xorg.0.log
+xpid=$!
+i=0
+until xdpyinfo >/dev/null 2>&1; do
+    i=$((i + 1))
+    if [ "$i" -gt 100 ] || ! kill -0 "$xpid" 2>/dev/null; then
+        echo "tablet-session: X did not start; end of ~/.local/share/xorg/Xorg.0.log:" >&2
+        tail -n 25 "$HOME/.local/share/xorg/Xorg.0.log" >&2
+        exit 1
+    fi
+    sleep 0.2
+done
+echo "tablet-session: X runs (rotation $ROTATION); warnings and errors of X:"
+grep -E '\((EE|WW)\)' "$HOME/.local/share/xorg/Xorg.0.log" >&2
+
+xsetroot -solid '#0d1526'
+# text size for 600x1024 on 7 inches; dark GTK look like the tablet's start screen
+echo 'Xft.dpi: 130' | xrdb -merge
+export GTK_THEME=Adwaita:dark
+eval "$(dbus-launch --sh-syntax)"
+export DBUS_SESSION_BUS_ADDRESS
+
+matchbox-window-manager -theme Tablet -use_titlebar yes -use_cursor no &
+TABLET_XPID=$xpid TABLET_NEXT=$NEXT tablet-launcher &
+tablet-onboard &
+
+wait "$xpid"
+echo "tablet-session: X ended"
+if [ -f "$NEXT" ] && [ "$(cat "$NEXT")" = remote ]; then
+    echo "tablet-session: on to the remote control"
+    exit 50
+fi

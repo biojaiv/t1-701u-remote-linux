@@ -1,0 +1,5 @@
+backup/
+tools/
+build/
+__pycache__/
+device/

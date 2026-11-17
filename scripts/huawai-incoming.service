@@ -1,0 +1,14 @@
+# System unit (root): loads scripts/mullvad-incoming.nft at boot, removes it
+# on stop. Install: see docs/USAGE.md, remote access from another network.
+[Unit]
+Description=Huawai: let the tablet's call through Mullvad's firewall (TCP 7110)
+After=network-pre.target mullvad-daemon.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/sbin/nft -f /etc/huawai/mullvad-incoming.nft
+ExecStop=/usr/sbin/nft delete table inet huawai_incoming
+
+[Install]
+WantedBy=multi-user.target

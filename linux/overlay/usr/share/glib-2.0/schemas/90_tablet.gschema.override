@@ -1,0 +1,25 @@
+# Defaults for the tablet (there is no dconf: gsettings keeps changes only in
+# memory, so the defaults are what counts). Compiled by setup.sh ui.
+
+# onboard: appears by itself at text fields (needs at-spi2), docked at the
+# bottom like a phone keyboard, dark, no tray icon (there is no tray)
+[org.onboard]
+layout='Compact'
+theme='Nightshade'
+show-status-icon=false
+start-minimized=true
+
+[org.onboard.auto-show]
+enabled=true
+
+[org.onboard.window]
+docking-enabled=true
+docking-edge='bottom'
+docking-shrink-workarea=true
+force-to-top=true
+
+[org.onboard.window.landscape]
+dock-expand=true
+
+[org.onboard.icon-palette]
+in-use=false

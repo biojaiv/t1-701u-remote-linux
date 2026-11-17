@@ -1,0 +1,138 @@
+#!/usr/bin/python3
+"""Settings: brightness, battery, Wi-Fi, storage and system of the tablet.
+
+Brightness goes through tb-sysd (the display's brightness file belongs to
+Android's system user; tb-sysd clamps it to 10..255 so the screen never goes
+fully dark). Everything else is only read. Volume is not here yet: sound is
+not tested on this tablet.
+"""
+import os
+import platform
+import sys
+
+sys.path.insert(0, "/usr/local/lib/tablet")
+import tabletui as ui  # noqa: E402
+from gi.repository import GLib, Gtk  # noqa: E402
+
+
+def os_name():
+    try:
+        with open("/etc/os-release") as f:
+            for line in f:
+                if line.startswith("PRETTY_NAME="):
+                    return line.split("=", 1)[1].strip().strip('"')
+    except OSError:
+        pass
+    return "Linux"
+
+
+def disk(path):
+    try:
+        st = os.statvfs(path)
+    except OSError:
+        return None
+    return st.f_bavail * st.f_frsize, st.f_blocks * st.f_frsize
+
+
+class Settings:
+    def __init__(self):
+        self.window = ui.full_screen_window("Settings")
+        outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=14, margin=28)
+        self.window.add(outer)
+        outer.pack_start(ui.label("Settings", "title", xalign=0), False, False, 0)
+
+        grid = Gtk.Grid(column_spacing=18, row_spacing=18, column_homogeneous=True)
+        outer.pack_start(grid, True, True, 0)
+
+        # brightness
+        bright = self.card("Brightness")
+        self.scale = Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL, 10, 255, 5)
+        self.scale.set_draw_value(False)
+        self.bright_note = ui.label("", "dim", xalign=0)
+        bright.pack_start(self.scale, False, False, 8)
+        bright.pack_start(self.bright_note, False, False, 0)
+        grid.attach(bright.get_parent(), 0, 0, 1, 1)
+        self.pending = None
+        reply = ui.sysd("brightness")
+        if reply.startswith("brightness "):
+            self.scale.set_value(int(reply.split()[1]))
+            self.scale.connect("value-changed", self.on_brightness)
+        else:
+            self.scale.set_sensitive(False)
+            self.bright_note.set_text(f"not available: {reply.removeprefix('error ')}")
+
+        # battery
+        power = self.card("Battery")
+        self.battery = ui.label("", "sub", xalign=0, wrap=True)
+        power.pack_start(self.battery, False, False, 0)
+        grid.attach(power.get_parent(), 1, 0, 1, 1)
+
+        # network
+        net = self.card("Wi-Fi")
+        self.network = ui.label("", "sub", xalign=0, wrap=True)
+        net.pack_start(self.network, False, False, 0)
+        grid.attach(net.get_parent(), 0, 1, 1, 1)
+
+        # storage and system
+        sysbox = self.card("Storage and system")
+        self.system = ui.label("", "sub", xalign=0, wrap=True)
+        sysbox.pack_start(self.system, False, False, 0)
+        grid.attach(sysbox.get_parent(), 1, 1, 1, 1)
+
+        outer.pack_end(ui.label("Updates of the Linux system: on the laptop, \"scripts/linux.sh task "
+                                "upgrade\" (while Android runs).", "hint", xalign=0, wrap=True),
+                       False, False, 0)
+        self.update()
+        GLib.timeout_add_seconds(10, self.update)
+
+    def card(self, title):
+        frame = ui.styled(Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6), "card")
+        frame.pack_start(ui.label(title, "sub", xalign=0), False, False, 0)
+        inner = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        frame.pack_start(inner, True, True, 0)
+        return inner
+
+    def on_brightness(self, scale):
+        # send only the last value of a drag, at most every 150 ms
+        if self.pending is None:
+            self.pending = GLib.timeout_add(150, self.send_brightness)
+
+    def send_brightness(self):
+        self.pending = None
+        reply = ui.sysd("brightness", str(int(self.scale.get_value())))
+        self.bright_note.set_text("" if reply.startswith("brightness ") else
+                                  f"Error: {reply.removeprefix('error ')}")
+        return False
+
+    def update(self):
+        state = ui.battery()
+        if state is None:
+            self.battery.set_text("not readable")
+        else:
+            text = f"{state['percent']} %, {'charging' if state['charging'] else 'discharging'}"
+            if "temperature" in state:
+                text += f"\n{state['temperature']:.1f} °C, {state['voltage']:.2f} V"
+            self.battery.set_text(text)
+        address = ui.wlan_address()
+        self.network.set_text(f"connected, address {address}\n(set up by Android)"
+                              if address else "not connected")
+        lines = []
+        for path, name in (("/", "System"), ("/media/iso", "Images")):
+            space = disk(path)
+            if space:
+                lines.append(f"{name}: {ui.human_size(space[0])} free of {ui.human_size(space[1])}")
+        lines.append(f"{os_name()}, Kernel {platform.release()}")
+        self.system.set_text("\n".join(lines))
+        return True
+
+
+def main():
+    ui.apply_style()
+    settings = Settings()
+    settings.window.connect("destroy", Gtk.main_quit)
+    settings.window.show_all()
+    Gtk.main()
+
+
+if __name__ == "__main__":
+    main()

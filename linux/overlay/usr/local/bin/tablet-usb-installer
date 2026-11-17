@@ -1,0 +1,165 @@
+#!/usr/bin/python3
+"""USB-Installer: offer an installation image (ISO) to another computer.
+
+Lists the images in /media/iso (the tablet's image folder; copied there from
+the laptop with "scripts/linux.sh iso-send FILE"). Tapping an image and
+"Share" asks tb-sysd (root) to switch the USB port to mass storage
+with that image, read-only. Then: cable into the other computer, start it
+and choose the tablet in its boot menu. "Stop" takes the image away and
+switches USB back. The tablet itself does not restart; the setting stays
+until "Stop" (also when the Linux session ends).
+"""
+import os
+import sys
+
+sys.path.insert(0, "/usr/local/lib/tablet")
+import tabletui as ui  # noqa: E402
+from gi.repository import GLib, Gtk  # noqa: E402
+
+IMAGES = "/media/iso"
+
+
+def images():
+    try:
+        names = sorted(os.listdir(IMAGES), key=str.lower)
+    except OSError:
+        return []
+    result = []
+    for name in names:
+        path = os.path.join(IMAGES, name)
+        if name.lower().endswith((".iso", ".img")) and os.path.isfile(path) \
+                and not os.path.islink(path):
+            result.append((name, os.path.getsize(path)))
+    return result
+
+
+class Installer:
+    def __init__(self):
+        self.window = ui.full_screen_window("USB installer")
+        self.selected = None
+        self.mode = "disk"
+        outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=14, margin=28)
+        self.window.add(outer)
+        outer.pack_start(ui.label("USB installer", "title", xalign=0), False, False, 0)
+        outer.pack_start(ui.label("The tablet as installation medium for another computer",
+                                  "sub", xalign=0), False, False, 0)
+
+        self.state = ui.label("", "sub", xalign=0, wrap=True)
+        card = ui.styled(Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6), "card")
+        card.pack_start(self.state, False, False, 0)
+        outer.pack_start(card, False, False, 4)
+
+        self.list = Gtk.FlowBox(homogeneous=True, selection_mode=Gtk.SelectionMode.NONE,
+                                column_spacing=16, row_spacing=16, max_children_per_line=3,
+                                valign=Gtk.Align.START)
+        scroller = Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER)
+        scroller.add(self.list)
+        outer.pack_start(scroller, True, True, 0)
+
+        modes = Gtk.Box(spacing=12)
+        self.disk = ui.styled(Gtk.Button(label="As removable drive (recommended)"), "big")
+        self.cd = ui.styled(Gtk.Button(label="As CD (up to 2.2 GB)"), "big")
+        self.disk.connect("clicked", self.set_mode, "disk")
+        self.cd.connect("clicked", self.set_mode, "cd")
+        modes.pack_start(self.disk, False, False, 0)
+        modes.pack_start(self.cd, False, False, 0)
+        outer.pack_start(modes, False, False, 0)
+
+        actions = Gtk.Box(spacing=12)
+        self.offer = ui.styled(Gtk.Button(label="Share"), "big", "accent")
+        self.stop = ui.styled(Gtk.Button(label="Stop"), "big")
+        self.offer.connect("clicked", self.turn_on)
+        self.stop.connect("clicked", self.turn_off)
+        actions.pack_start(self.offer, False, False, 0)
+        actions.pack_start(self.stop, False, False, 0)
+        outer.pack_start(actions, False, False, 0)
+        outer.pack_end(ui.label("Then: plug the cable into the other computer, restart it and "
+                                "choose the tablet in its boot menu (usually F12, F11 or Esc).",
+                                "hint", xalign=0, wrap=True), False, False, 0)
+        self.set_mode(None, "disk")
+        self.refresh()
+
+    def fill(self):
+        for child in self.list.get_children():
+            self.list.remove(child)
+        found = images()
+        if not found:
+            self.list.add(ui.label("No images yet. On the laptop: scripts/linux.sh iso-send FILE",
+                                   "dim", wrap=True))
+        for name, size in found:
+            button = ui.styled(Gtk.Button(), "tile")
+            box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+            image = Gtk.Image.new_from_icon_name("media-optical", Gtk.IconSize.DIALOG)
+            image.set_pixel_size(48)
+            box.pack_start(image, False, False, 0)
+            name_label = Gtk.Label(label=name)
+            name_label.set_line_wrap(True)
+            name_label.set_max_width_chars(22)
+            box.pack_start(name_label, False, False, 0)
+            box.pack_start(ui.label(ui.human_size(size), "dim"), False, False, 0)
+            button.add(box)
+            if name == self.selected:
+                ui.styled(button, "selected")
+            button.connect("clicked", self.select, name)
+            self.list.add(button)
+        self.list.show_all()
+
+    def select(self, _button, name):
+        self.selected = name
+        self.fill()
+
+    def set_mode(self, _button, mode):
+        self.mode = mode
+        for button, value in ((self.disk, "disk"), (self.cd, "cd")):
+            context = button.get_style_context()
+            (context.add_class if value == mode else context.remove_class)("selected")
+
+    def show(self, reply):
+        if reply.startswith("on "):
+            _, name, mode = reply.split(maxsplit=2)
+            self.state.set_text(f"Shared: {name} ({'CD' if mode == 'cd' else 'removable drive'}). "
+                                "The tablet can now be connected to the other computer.")
+        elif reply == "off" or reply == "ok off":
+            self.state.set_text("No image shared. Choose an image, then \"Share\".")
+        else:
+            self.state.set_text(f"Error: {reply.removeprefix('error ')}")
+
+    def refresh(self):
+        self.fill()
+        self.show(ui.sysd("status"))
+
+    def run_request(self, *words):
+        self.state.set_text("One moment …")
+        self.offer.set_sensitive(False)
+        self.stop.set_sensitive(False)
+
+        def work():
+            reply = ui.sysd(*words)
+            if reply.startswith("ok on "):
+                reply = reply[3:]
+            self.show(reply)
+            self.offer.set_sensitive(True)
+            self.stop.set_sensitive(True)
+            return False
+        GLib.timeout_add(100, work)   # let the "moment" text appear first
+
+    def turn_on(self, _button):
+        if not self.selected:
+            self.state.set_text("Tap an image first.")
+            return
+        self.run_request("on", self.selected, self.mode)
+
+    def turn_off(self, _button):
+        self.run_request("off")
+
+
+def main():
+    ui.apply_style()
+    installer = Installer()
+    installer.window.connect("destroy", Gtk.main_quit)
+    installer.window.show_all()
+    Gtk.main()
+
+
+if __name__ == "__main__":
+    main()

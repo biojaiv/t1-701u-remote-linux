@@ -1,0 +1,5 @@
+# Devuan 6 "excalibur" (Debian 13 without systemd), signed by
+# "Devuan Release Signing (Excalibur)", 9F8D 6C74 DE66 1075 FD17 1BE3 B398 2868 D104 092C
+deb https://pkgmaster.devuan.org/merged excalibur main
+deb https://pkgmaster.devuan.org/merged excalibur-updates main
+deb https://pkgmaster.devuan.org/merged excalibur-security main

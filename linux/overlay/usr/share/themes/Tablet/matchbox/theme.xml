@@ -1,0 +1,90 @@
+<?xml version="1.0"?>
+<!-- matchbox theme "Tablet": the colours of the tablet's start screen
+     (tablet/ui.c), title bar and buttons large enough for a finger.
+     Button images: scripts/gen-mbtheme.py -->
+<theme name="Tablet" author="project" desc="dark, touch" version="1.0" engine_version="1" >
+
+<color id="card"    def="#182138" />
+<color id="edge"    def="#2c3a5c" />
+<color id="text"    def="#f0f4fa" />
+<color id="dim"     def="#9aa4b2" />
+<color id="accent"  def="#2563eb" />
+<color id="menubg"  def="#101a2e" />
+<color id="trans"   def="#ffffff00" />
+
+<font id="titlefont" def="DejaVu Sans 19px" />
+<font id="menufont"  def="DejaVu Sans 21px" />
+
+<pixmap id="closebutton" filename="closebutton.xpm" />
+<pixmap id="menubutton"  filename="menubutton.xpm" />
+
+<frame id="main" height="44">
+  <layer x="0" y="0" w="100%" h="100%" type="plain" color="card" />
+  <layer x="0" y="43" w="100%" h="1" type="plain" color="edge" />
+  <layer x="56" y="10" w="100%-112" h="30" type="label" color="text" justify="center" font="titlefont" />
+  <button x="100%-44" y="0" w="44" h="44" action="close" >
+    <active pixmap="closebutton" blend="-90"/>
+    <inactive pixmap="closebutton" />
+  </button>
+  <button x="0" y="0" w="44" h="44" action="menu" >
+    <active pixmap="menubutton" blend="-90"/>
+    <inactive pixmap="menubutton" />
+  </button>
+  <button x="labelx" y="0" w="labelw" h="44" action="menu" options="inputonly" />
+</frame>
+
+<frame id="main-east" width="1" >
+  <layer x="0" y="0" w="100%" h="100%" type="plain" color="card" />
+</frame>
+<frame id="main-west" width="1" >
+  <layer x="0" y="0" w="100%" h="100%" type="plain" color="card" />
+</frame>
+<frame id="main-south" height="1" >
+  <layer x="0" y="0" w="100%" h="100%" type="plain" color="card" />
+</frame>
+
+<frame id="dialog" height="44" >
+  <layer x="0" y="0" w="100%" h="100%" type="plain" color="card" />
+  <layer x="0" y="43" w="100%" h="1" type="plain" color="edge" />
+  <layer x="14" y="10" w="100%-72" h="30" type="label" color="text" justify="left" font="titlefont" />
+  <button x="-44" y="0" w="44" h="44" action="close" >
+    <active pixmap="closebutton" blend="-90"/>
+    <inactive pixmap="closebutton" />
+  </button>
+</frame>
+<frame id="dialog-north" height="2">
+  <layer x="0" y="0" w="100%" h="100%" type="plain" color="edge" />
+</frame>
+<frame id="dialog-east" width="2" >
+  <layer x="0" y="0" w="100%" h="100%" type="plain" color="edge" />
+</frame>
+<frame id="dialog-west" width="2" >
+  <layer x="0" y="0" w="100%" h="100%" type="plain" color="edge" />
+</frame>
+<frame id="dialog-south" height="2" >
+  <layer x="0" y="0" w="100%" h="100%" type="plain" color="edge" />
+</frame>
+
+<frame id="utility-max" width="44">
+  <layer x="0" y="0" w="100%" h="100%" type="plain" color="card" />
+  <button x="0" y="0" w="100%" h="100%" action="minimize" options="inputonly"/>
+</frame>
+<frame id="utility-min" height="44">
+  <layer x="0" y="0" w="100%" h="100%" type="plain" color="card" />
+  <layer x="14" y="10" w="100%-72" h="30" type="label" color="text" justify="left" font="titlefont" />
+  <button x="0" y="0" w="100%-44" h="100%" action="maximize" options="inputonly"/>
+  <button x="-44" y="0" w="44" h="44" action="close" >
+    <active pixmap="closebutton" blend="-90"/>
+    <inactive pixmap="closebutton" />
+  </button>
+</frame>
+
+<frame id="menu" border_north="8" border_south="8" border_west="8" border_east="8"
+       font="menufont" highlight="accent" color="text" options="shaped" >
+  <layer x="0" y="0" w="100%" h="100%" type="plain" color="edge" />
+  <layer x="1" y="1" w="100%-2" h="100%-2" type="plain" color="menubg" />
+  <layer x="0" y="-1" w="1" h="1" type="plain" color="trans" />
+  <layer x="-1" y="-1" w="1" h="1" type="plain" color="trans" />
+</frame>
+
+</theme>

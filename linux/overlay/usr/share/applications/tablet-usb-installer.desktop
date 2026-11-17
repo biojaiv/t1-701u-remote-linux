@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=USB installer
+Comment=The tablet as installation medium for another computer
+Exec=tablet-usb-installer
+Icon=drive-removable-media
+Categories=System;

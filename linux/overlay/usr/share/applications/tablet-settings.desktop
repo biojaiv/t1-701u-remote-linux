@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=Settings
+Comment=Brightness, battery, Wi-Fi, storage
+Exec=tablet-settings
+Icon=preferences-system
+Categories=Settings;

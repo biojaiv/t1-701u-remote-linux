@@ -1,0 +1,145 @@
+#!/usr/bin/python3
+"""Start screen of the Linux desktop on the tablet, in the look of tb-home.
+
+Clock, date, Wi-Fi address and battery at the top, one large tile per
+program below. Tapping a tile starts the program; matchbox shows it full
+screen. The launcher is the desktop window (type hint DESKTOP), so matchbox
+comes back to it when a program is closed.
+
+The first tile, "Remote control", ends the Linux session and lets the
+tablet's start screen open the remote control: it writes "remote" to
+$TABLET_NEXT and ends the X server ($TABLET_XPID); tablet-session then exits
+with 50, which tb-home takes as the request for the remote control.
+"""
+import datetime
+import os
+import signal
+import sys
+
+sys.path.insert(0, "/usr/local/lib/tablet")
+import tabletui as ui  # noqa: E402
+from gi.repository import Gio, GLib, Gtk  # noqa: E402
+
+# programs shown first, by executable, with short German names
+PREFERRED = [("tablet-usb-installer", "USB installer"), ("tablet-settings", "Settings"),
+             ("lxterminal", "Terminal"), ("pcmanfm", "Files"), ("mousepad", "Editor"),
+             ("netsurf-gtk", "Browser"), ("netsurf", "Browser"), ("ristretto", "Images"),
+             ("parole", "Music & video"), ("atril", "PDF"), ("guvcview", "Camera")]
+# helpers that make no sense as tiles here
+HIDDEN = {"onboard", "onboard-settings", "matchbox-desktop", "tablet-launcher", "xdg-open",
+          "lxterminal-root", "pcmanfm-desktop-pref", "tablet-onboard"}
+DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August",
+          "September", "October", "November", "December"]
+
+
+def programs():
+    """[(label, AppInfo)], preferred programs first, then the rest by name."""
+    found = {}
+    for app in Gio.AppInfo.get_all():
+        if not app.should_show():
+            continue
+        exe = (app.get_executable() or "").rsplit("/", 1)[-1]
+        if exe in HIDDEN or exe in found:
+            continue
+        found[exe] = app
+    ordered = []
+    for exe, name in PREFERRED:
+        if exe in found:
+            ordered.append((name, found.pop(exe)))
+    for exe, app in sorted(found.items(), key=lambda item: item[1].get_display_name().lower()):
+        ordered.append((app.get_display_name(), app))
+    return ordered
+
+
+class Launcher:
+    def __init__(self):
+        self.window = ui.full_screen_window("Start", desktop=True)
+        outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4, margin=28)
+        self.window.add(outer)
+
+        top = Gtk.Box(spacing=12)
+        self.network = ui.label("", "status", xalign=0)
+        self.power = ui.label("", "status", xalign=1)
+        top.pack_start(self.network, True, True, 0)
+        top.pack_end(self.power, False, False, 0)
+        outer.pack_start(top, False, False, 0)
+
+        self.clock = ui.label("", "clock")
+        self.date = ui.label("", "date")
+        outer.pack_start(self.clock, False, False, 0)
+        outer.pack_start(self.date, False, False, 8)
+
+        grid = Gtk.FlowBox(homogeneous=True, selection_mode=Gtk.SelectionMode.NONE,
+                           column_spacing=22, row_spacing=22, max_children_per_line=5,
+                           min_children_per_line=3, halign=Gtk.Align.CENTER,
+                           valign=Gtk.Align.START)
+        if os.environ.get("TABLET_XPID") and os.environ.get("TABLET_NEXT"):
+            grid.add(self.button("Remote control",
+                                 Gtk.Image.new_from_icon_name("computer", Gtk.IconSize.DIALOG),
+                                 self.to_remote))
+        for name, app in programs():
+            icon = app.get_icon()
+            image = (Gtk.Image.new_from_gicon(icon, Gtk.IconSize.DIALOG) if icon else
+                     Gtk.Image.new_from_icon_name("application-x-executable", Gtk.IconSize.DIALOG))
+            grid.add(self.button(name, image, self.start, app))
+        scroller = Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER)
+        scroller.add(grid)
+        outer.pack_start(scroller, True, True, 14)
+
+        outer.pack_end(ui.label("Back to the tablet's start screen: hold both volume keys",
+                                "hint"), False, False, 0)
+        self.update()
+        GLib.timeout_add_seconds(10, self.update)
+
+    def button(self, name, image, handler, *data):
+        button = ui.styled(Gtk.Button(), "tile")
+        button.set_size_request(168, 136)
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        image.set_pixel_size(64)
+        box.pack_start(image, True, True, 0)
+        box.pack_start(Gtk.Label(label=name), False, False, 0)
+        button.add(box)
+        button.connect("clicked", handler, *data)
+        return button
+
+    def start(self, button, app):
+        context = button.get_style_context()
+        context.add_class("starting")       # feedback: starting takes a moment here
+        try:
+            app.launch([], None)
+        except GLib.Error as error:
+            print(f"tablet-launcher: {app.get_display_name()}: {error.message}", flush=True)
+        GLib.timeout_add_seconds(3, lambda: context.remove_class("starting") or False)
+
+    def to_remote(self, button):
+        button.get_style_context().add_class("starting")
+        try:
+            with open(os.environ["TABLET_NEXT"], "w") as f:
+                f.write("remote")
+            os.kill(int(os.environ["TABLET_XPID"]), signal.SIGTERM)   # ends the whole session
+        except (OSError, ValueError) as error:
+            print(f"tablet-launcher: cannot switch to the remote control: {error}", flush=True)
+
+    def update(self):
+        now = datetime.datetime.now()
+        self.clock.set_text(now.strftime("%H:%M"))
+        self.date.set_text(f"{DAYS[now.weekday()]}, {now.day} {MONTHS[now.month - 1]} {now.year}")
+        address = ui.wlan_address()
+        self.network.set_text(f"Wi-Fi {address}" if address else "Wi-Fi off")
+        state = ui.battery()
+        self.power.set_text("Battery ?" if state is None else
+                            f"{'⚡ ' if state['charging'] else ''}Battery {state['percent']} %")
+        return True
+
+
+def main():
+    ui.apply_style()
+    launcher = Launcher()
+    launcher.window.connect("destroy", Gtk.main_quit)
+    launcher.window.show_all()
+    Gtk.main()
+
+
+if __name__ == "__main__":
+    main()

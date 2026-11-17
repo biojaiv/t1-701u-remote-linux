@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=MBTheme
+Name=Tablet
+Comment=dark, touch-sized; colours of the tablet's start screen
+MenuBgColor=#101a2e
+MenuFgColor=#f0f4fa
+MenuBdColor=#2c3a5c
+MenuHlColor=#2563eb
+PanelFgColor=#f0f4fa
+PanelBgColor=#182138
+DesktopBgSpec=col-solid:#0d1526
+DesktopHlCol=#2563eb

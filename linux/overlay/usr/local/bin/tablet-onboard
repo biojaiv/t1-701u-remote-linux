@@ -1,0 +1,35 @@
+#!/usr/bin/python3
+"""onboard (on-screen keyboard) with one fix for Python 3.12 and newer.
+
+onboard 1.4.1 (Debian 13) turns characters into X key symbols with its C
+module (keysym_from_unicode), which fails on Python 3.13 with
+"SystemError: argument 1 (impossible<bad format char>)"; seen on the tablet
+when inserting text. The X convention is simple enough to do here: Latin-1
+characters are their own key symbol, all others are 0x01000000 + code point.
+"""
+from Onboard import Keyboard
+
+
+def _keysym(char):
+    code = ord(char)
+    return code if 0x20 <= code <= 0x7E or 0xA0 <= code <= 0xFF else 0x01000000 | code
+
+
+def _press_unicode(self, char):
+    if self._vk:
+        self.press_keysym(_keysym(char))
+
+
+def _release_unicode(self, char):
+    if self._vk:
+        self.release_keysym(_keysym(char))
+
+
+Keyboard.KeySynthVirtkey.press_unicode = _press_unicode
+Keyboard.KeySynthVirtkey.release_unicode = _release_unicode
+
+import sys  # noqa: E402
+from Onboard.Exceptions import chain_handler  # noqa: E402
+sys.excepthook = chain_handler
+from Onboard.OnboardGtk import OnboardGtk  # noqa: E402
+OnboardGtk()

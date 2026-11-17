@@ -1,0 +1,23 @@
+#!/usr/sbin/nft -f
+# Lets the tablet's call reach hostd on port 7110 although Mullvad is
+# connected: Mullvad's firewall drops incoming traffic outside the tunnel
+# (its LAN sharing covers private addresses only, not public IPv6). The two
+# marks are the ones Mullvad documents for excluded traffic:
+# https://mullvad.net/en/help/split-tunneling-with-linux-advanced
+# ("Allowing incoming traffic (for servers)", page dated 2024-04-25).
+# inet: IPv4 and IPv6. Priority -100: before Mullvad's own chains.
+# Only port 7110, only TCP; hostd lets in only the paired tablet's key.
+
+table inet huawai_incoming
+delete table inet huawai_incoming
+
+table inet huawai_incoming {
+    chain allowIncoming {
+        type filter hook input priority -100; policy accept;
+        tcp dport 7110 counter ct mark set 0x00000f41 meta mark set 0x6d6f6c65;
+    }
+    chain allowOutgoing {
+        type route hook output priority -100; policy accept;
+        tcp sport 7110 counter ct mark set 0x00000f41 meta mark set 0x6d6f6c65;
+    }
+}

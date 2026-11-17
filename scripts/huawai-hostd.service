@@ -1,0 +1,25 @@
+# systemd user service: starts hostd at login (step P3.9). Installed by
+# scripts/install.sh, which fills in WorkingDirectory. By hand:
+#   sed "s|^WorkingDirectory=.*|WorkingDirectory=$PWD|" scripts/huawai-hostd.service \
+#       > ~/.config/systemd/user/huawai-hostd.service
+#   systemctl --user daemon-reload && systemctl --user enable --now huawai-hostd
+# Remove:
+#   systemctl --user disable --now huawai-hostd && rm ~/.config/systemd/user/huawai-hostd.service
+[Unit]
+Description=hostd: mirror the laptop screen to the Huawei tablet
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+WorkingDirectory=/path/to/t1-701u-remote-linux
+Environment=PYTHONUNBUFFERED=1
+# settings (Wi-Fi address, rotation, view) come from ~/.config/huawai-companion/hostd.toml
+# outside Mullvad's tunnel if Mullvad VPN is installed: the tablet may call
+# from the Internet through the router, which Mullvad's firewall would block
+# (see also scripts/mullvad-incoming.nft). hostd talks only to the tablet.
+ExecStart=/bin/sh -c 'if [ -x /usr/bin/mullvad-exclude ]; then exec /usr/bin/mullvad-exclude /usr/bin/python3 -m host.main; else exec /usr/bin/python3 -m host.main; fi'
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=graphical-session.target
