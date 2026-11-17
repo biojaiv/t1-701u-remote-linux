@@ -90,7 +90,7 @@ The full procedure, including the optional parts, is in **[docs/INSTALL.md](docs
 
 ## License
 
-MIT, see [LICENSE](LICENSE). Monocypher (CC0-1.0 or BSD-2-Clause) and tinyalsa (BSD-3-Clause)
-keep their own licenses.
+MIT, see [LICENSE](LICENSE). Monocypher (CC0-1.0 or BSD-2-Clause), tinyalsa (BSD-3-Clause) and the
+DejaVu font glyphs keep their own licenses, see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 No firmware, vendor files or binaries of Huawei, Spreadtrum/Unisoc or KingRoot are part of this
 repository.

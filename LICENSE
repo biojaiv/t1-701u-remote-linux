@@ -19,16 +19,3 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
-
--------------------------------------------------------------------------------
-
-third_party/monocypher-4.0.3 is Monocypher by Loup Vaillant and contributors,
-under its own license (CC0-1.0 or BSD-2-Clause), see
-third_party/monocypher-4.0.3/LICENCE.md.
-
-tablet/font_aa.h contains glyph bitmaps rendered from the DejaVu fonts
-(Bitstream Vera license, DejaVu changes in the public domain), see
-third_party/dejavu-fonts/.
-
-third_party/tinyalsa-1.1.1 is tinyalsa by The Android Open Source Project and
-contributors, BSD-3-Clause, see third_party/tinyalsa-1.1.1/NOTICE.
