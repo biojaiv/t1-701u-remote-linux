@@ -74,6 +74,7 @@ class Portal:
         self.used_token = None
         self.keys_down = set()           # keysyms pressed and not yet confirmed released
         self._closed_match = None
+        self._closed = False             # close() was called: late answers are dropped
 
     # -- request/response plumbing ---------------------------------------
 
@@ -85,6 +86,13 @@ class Portal:
 
         def on_response(code, results):
             match.remove()
+            if self._closed:
+                # closed while the portal was still answering (switching the
+                # view quickly): drop the answer; a session it created is
+                # closed at once instead of being left open
+                if code == 0 and "session_handle" in results:
+                    self._close_session(dbus.ObjectPath(str(results["session_handle"])))
+                return
             if code == 0:
                 done(results)
             else:
@@ -115,6 +123,7 @@ class Portal:
     # -- session set-up ---------------------------------------------------
 
     def start(self, use_token=True):
+        self._closed = False
         self._use_token = use_token
         session_token = "hc" + secrets.token_hex(8)
         self._request(self.remote.CreateSession, (),
@@ -176,13 +185,17 @@ class Portal:
             self._closed_match = None
 
     def close(self):
+        self._closed = True
         self._drop_closed_match()
         if self.session:
-            try:
-                dbus.Interface(self.bus.get_object(BUS_NAME, self.session), SESSION_IFACE).Close()
-            except dbus.DBusException:
-                pass
+            self._close_session(self.session)
             self.session = None
+
+    def _close_session(self, handle):
+        try:
+            dbus.Interface(self.bus.get_object(BUS_NAME, handle), SESSION_IFACE).Close()
+        except dbus.DBusException:
+            pass
 
     # -- input (the interface host/pointer.py expects) ----------------------
 

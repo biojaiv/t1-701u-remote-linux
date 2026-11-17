@@ -34,6 +34,7 @@ class Hostd:
     def __init__(self, mode, rotation, port, use_adb=True, wifi=None, learn_address=False,
                  internet_port=0, audio=True):
         self.mode, self.rotation = mode, rotation
+        self.start_mode = mode       # the view a remote control opened again starts with
         self.audio_wanted = audio
         self.audio = None            # AudioSender while connected and the tablet plays sound
         self.learn_address = learn_address
@@ -257,8 +258,10 @@ class Hostd:
             hit = self.screens[self.mode].tap(x_c, y_c)
             if hit == modes.BACK:
                 # like holding both volume keys: the remote control ends and
-                # the tablet shows its start screen
+                # the tablet shows its start screen. Opened again, it starts
+                # with the start view (the laptop's picture), not this menu.
                 self.session.send_message(link.HOME)
+                self.mode = self.start_mode
             elif hit is not None:
                 self.next_render = 0.0   # show the pressed button at once
 

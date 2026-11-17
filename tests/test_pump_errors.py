@@ -51,3 +51,30 @@ class PumpLoop(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class BackStartsFresh(unittest.TestCase):
+    """After "Back" in a menu, the remote control opened again starts with the
+    start view (the laptop's picture), not with the menu it was left from."""
+
+    def test_back_resets_the_view_and_asks_for_home(self):
+        sent = []
+
+        class Session:
+            height, width = 1024, 600
+
+            def send_message(self, msg_type, payload=b""):
+                sent.append(msg_type)
+
+        class Menu:
+            def tap(self, x, y):
+                return main.modes.BACK
+
+        hostd = object.__new__(main.Hostd)
+        hostd.session = Session()
+        hostd.rotation = "counterclockwise"
+        hostd.mode, hostd.start_mode = "macros", "mirror"
+        hostd.screens = {"macros": Menu()}
+        hostd.on_touch(0, main.pointer.DOWN, 10, 10)
+        self.assertEqual(sent, [main.link.HOME])
+        self.assertEqual(hostd.mode, "mirror")

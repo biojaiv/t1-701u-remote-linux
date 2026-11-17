@@ -149,12 +149,16 @@ class MiniPaths(LaunchCase):
         self.set_mode("mini")
         self.launch(wait=False)
         self.wait_for_call("tb-home")
+        self.wait_for_call("tb-rootd")
         names = [line.split()[0] for line in self.calls()]
         # the firewall (several iptables calls) between key check and stop
         collapsed = [n for i, n in enumerate(names)
                      if n != "iptables" or (i > 0 and names[i - 1] != "iptables")]
-        self.assertEqual(collapsed, ["tb-keyheld", "iptables", "setprop", "stop", "sleep",
-                                     "tb-rootd", "tb-home"])
+        self.assertEqual(collapsed[:5], ["tb-keyheld", "iptables", "setprop", "stop", "sleep"])
+        # tb-rootd runs in the background, tb-home right after it: which of the
+        # two reaches the log first is chance (seen under load); both come
+        # only after Android was stopped
+        self.assertEqual(sorted(collapsed[5:]), ["tb-home", "tb-rootd"])
         self.assertIn("setprop sys.usb.config adb", self.calls())
         home = [line for line in self.calls() if line.startswith("tb-home")][0]
         own, _, remote = home.partition(" -- ")
