@@ -9,7 +9,7 @@ system such as GrapheneOS, and nothing here makes up for the old kernel.
 |---|---|---|
 | USB cable via `adb` | ADB checks the laptop's RSA key; the data itself is unencrypted but only travels through the cable | whoever holds the cable |
 | Wi-Fi direct, port 7100 | encrypted and mutually authenticated (below), plus the firewall | only whoever has the shared key |
-| Call from outside (optional), laptop port e.g. 7110 | same encryption and key check as port 7100; the laptop runs up to four handshakes at once, a new caller pushes out the oldest waiting one, and only an address that failed is paused for 2 s | only whoever has the shared key; strangers can at most slow the call down |
+| Call from outside (optional), laptop port e.g. 7110 (or 443, redirected to it by `scripts/port443.nft`) | same encryption and key check as port 7100; the laptop runs up to four handshakes at once, a new caller pushes out the oldest waiting one, and only an address that failed is paused for 2 s; a caller that proves the key replaces a connection that is still open (the tablet calls only when it has lost its session) | only whoever has the shared key; strangers can at most slow the call down. Anyone can see that the port answers: `hostd` greets every caller with its handshake ("HWC1") |
 | Local socket `@tabletd` on the tablet (used by `adb` for the cable link) | the caller's uid is checked (`SO_PEERCRED`): only root, adbd (2000) and `tabletd`'s own uid; `--local-uids` changes the list | Android apps and the Linux session are refused |
 | `adb` over Wi-Fi, port 5555 | only the ADB key and the firewall, **unencrypted**, gives a shell with root access | meant for setup only; should be off (see "Status") |
 
@@ -45,7 +45,13 @@ system such as GrapheneOS, and nothing here makes up for the old kernel.
 - **Separate programs:** the remote control (`tabletd`) is a separate process that the start screen
   (`tb-home`) starts only on request. The encrypted port is open only while it runs.
 - **Few privileges:** in test mode `tabletd` runs as the shell user; in mini mode it runs as its own
-  user 2900 (after opening devices, key and port). `tb-home` does not process any network data.
+  user 2900 (after opening devices, key and port). It keeps only the group `inet` (3003), which Android requires for network
+  sockets (the call to the laptop). `tb-home` does not process any network data.
+- **Addresses for the call from outside:** `hostd` sends them inside the encrypted connection
+  (MSG_ADDRESSES). `tabletd` keeps only global IPv6 addresses (2000::/3), at most four, in a file it
+  opened as root before dropping its privileges (`/data/tabletd/internet.learned`, mode 600), and
+  writes it only when something changed. Someone who could send them would need the shared key,
+  and a call to a wrong address still has to pass the key check.
 - **Sound:** travels inside the same encrypted connection as the picture. On the tablet, `tb-audio`
   opens the sound card while still root and then drops to the same unprivileged user as `tabletd`;
   it only plays what `tabletd` hands it through a pipe.

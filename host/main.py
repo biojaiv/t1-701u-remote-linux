@@ -17,7 +17,7 @@ import traceback
 
 from gi.repository import GLib
 
-from . import capture, config, encode, keyboard, link, modes, pointer, portal, secure
+from . import addresses, capture, config, encode, keyboard, link, modes, pointer, portal, secure
 
 MODES = ("mirror", "monitor", "macros")
 KEY_VOLUMEDOWN, KEY_VOLUMEUP = 114, 115
@@ -32,12 +32,16 @@ PORTAL_RETRY_S = 3
 
 class Hostd:
     def __init__(self, mode, rotation, port, use_adb=True, wifi=None, learn_address=False,
-                 internet_port=0, audio=True):
+                 internet_port=0, audio=True, call_port=0, internet_interface=""):
         self.mode, self.rotation = mode, rotation
         self.start_mode = mode       # the view a remote control opened again starts with
         self.audio_wanted = audio
         self.audio = None            # AudioSender while connected and the tablet plays sound
         self.learn_address = learn_address
+        # where the tablet calls us from another network (MSG_ADDRESSES)
+        self.internet_port = internet_port
+        self.call_port = call_port or internet_port
+        self.internet_interface = internet_interface
         # two frames in flight: sending the next overlaps with drawing this one
         if wifi or internet_port:
             # the cable stays the second choice, on another local port; the
@@ -84,11 +88,29 @@ class Hostd:
         now = time.time()
         offset = time.localtime(now).tm_gmtoff
         self.session.send_message(link.TIME, struct.pack("<Qi", int(now), offset))
+        self.send_call_addresses()
         self.enter_mode(self.mode)
         if self.mode == "mirror":
             self.frame = self.last_mirror_frame   # the tablet starts from nothing
             self.ensure_gestures()
         self.start_audio()
+
+    def send_call_addresses(self):
+        """Our current IPv6 addresses to the tablet, for its calls from another
+        network: it keeps them, so they need not be copied by hand before
+        leaving, and a new address from the router reaches it the next time
+        it is at home. Only if calls are on (internet_port) and tabletd
+        keeps them (INFO_ADDRESSES)."""
+        flags = self.session.link.flags if self.session.link else 0
+        if not self.internet_port or not flags & link.INFO_ADDRESSES:
+            return
+        found = addresses.call_addresses(self.internet_interface)
+        if not found:
+            print("addresses: no global IPv6 address to send the tablet", flush=True)
+            return
+        self.session.send_message(link.ADDRESSES, addresses.payload(self.call_port, found))
+        print(f"addresses: the tablet calls {' '.join(found)} on port {self.call_port}",
+              flush=True)
 
     def start_audio(self):
         """The laptop's sound to the tablet, if it plays sound (INFO_AUDIO)."""
@@ -394,12 +416,16 @@ def main():
     if (wifi or internet_port) and not secure.key_path().exists():
         print("hostd: no pairing key yet (huawai pair); using the cable only", flush=True)
         wifi, internet_port = None, 0
+    call_port = settings["internet_call_port"] or internet_port
     if internet_port:
-        print(f"hostd: the tablet may call from outside on port {internet_port}", flush=True)
+        print(f"hostd: the tablet may call from outside on port {internet_port}"
+              + (f" (it calls port {call_port}, redirected here)" if call_port != internet_port
+                 else ""), flush=True)
     hostd = Hostd(args.mode, args.rotation, args.port, use_adb=use_adb, wifi=wifi,
                   learn_address=not args.no_adb and not args.cable_only and
                   secure.key_path().exists(), internet_port=internet_port,
-                  audio=settings["audio"])
+                  audio=settings["audio"], call_port=call_port,
+                  internet_interface=settings["internet_interface"])
     GLib.timeout_add(PUMP_BUSY_MS, hostd.run_pump)
     loop = GLib.MainLoop()
     try:

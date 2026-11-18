@@ -11,8 +11,14 @@
 #   scripts/autostart.sh mode MODE      android | mini-once | mini
 #   scripts/autostart.sh trigger        run the app's receiver now, as at boot
 #   scripts/autostart.sh status         mode, counter, last lines of boot.log
-#   scripts/autostart.sh internet NAME PORT   the laptop's address from outside (DynDNS
-#                                       name or IPv4, forwarded port); "internet off" removes it
+#   scripts/autostart.sh internet NAME... PORT   the laptop's address(es) from outside
+#                                       (DynDNS name, IPv6 or IPv4; up to 4, tried in turn) and
+#                                       the port the router opens (443 or 1024 and up);
+#                                       "internet off" removes them and the learned ones;
+#                                       "internet auto PORT" takes this laptop's current
+#                                       global IPv6 addresses (not the temporary ones).
+#                                       hostd also sends its addresses at every connection
+#                                       (internet_port set); the tablet keeps those itself
 #   scripts/autostart.sh update         only replace the programs in /data/tabletd/bin
 #                                       (works in the own system too, through tb-su)
 #   scripts/autostart.sh remove         uninstall the app, mode android
@@ -121,16 +127,48 @@ cmd_update() {
 cmd_internet() {
     need_root
     if [ "${1:-}" = off ]; then
-        root "rm -f $D/internet"
-        say "the tablet no longer calls the laptop from outside"
+        root "rm -f $D/internet $D/internet.learned"
+        say "the tablet no longer calls the laptop from outside (set internet_port=0 in hostd,"
+        say "or it sends its addresses again at the next connection)"
         return 0
     fi
-    name=${1:-}
-    port=${2:-}
-    printf '%s' "$name" | grep -Eq '^[A-Za-z0-9.:-]{1,253}$' || fail "internet: NAME is a host name, IPv4 or IPv6"
+    if [ "${1:-}" = auto ]; then
+        # this laptop's global IPv6 addresses on the interface it prefers (the
+        # default route with the lowest metric: the router's opening is for one
+        # network card), without temporary (privacy) and deprecated ones, and
+        # only global unicast (2000::/3): a unique-local fd.. address is "scope
+        # global" too, but no router opens it to the internet
+        port=${2:-}
+        set --
+        for dev in $(ip -6 route show default | awk '{m = 1024; d = ""; for (i = 1; i < NF; i++) {
+                        if ($i == "dev") d = $(i + 1); if ($i == "metric") m = $(i + 1) }
+                        if (d != "") print m, d}' | sort -n | awk 'NR == 1 {print $2}'); do
+            for addr in $(ip -6 -o addr show dev "$dev" scope global | grep -vE 'temporary|deprecated|tentative|dadfailed' |
+                          awk '{split($4, a, "/"); print a[1]}'); do
+                case "$addr" in [23]*) ;; *) continue ;; esac
+                set -- "$@" "$addr"
+            done
+        done
+        [ "$#" -gt 0 ] || fail "internet auto: this laptop has no global IPv6 address"
+        [ "$#" -le 4 ] || set -- "$1" "$2" "$3" "$4"
+        say "this laptop's addresses: $*"
+        set -- "$@" "$port"
+    fi
+    [ "$#" -ge 2 ] || fail "internet: NAME... PORT"
+    [ "$#" -le 5 ] || fail "internet: at most 4 addresses"
+    names=""
+    while [ "$#" -gt 1 ]; do
+        printf '%s' "$1" | grep -Eq '^[A-Za-z0-9.:-]{1,253}$' || fail "internet: $1 is not a host name, IPv4 or IPv6"
+        names="$names $1"
+        shift
+    done
+    port=$1
     case "$port" in ''|*[!0-9]*) fail "internet: PORT is a number" ;; esac
-    [ "$port" -ge 1024 ] && [ "$port" -le 65535 ] || fail "internet: PORT from 1024 to 65535"
-    root "echo $name $port > $D/internet && chmod 600 $D/internet && cat $D/internet" |
+    # 443 is allowed: it gets through networks that let nothing else out; the
+    # laptop redirects it to hostd's port (scripts/port443.nft)
+    [ "$port" -eq 443 ] || { [ "$port" -ge 1024 ] && [ "$port" -le 65535 ]; } ||
+        fail "internet: PORT is 443 or from 1024 to 65535"
+    root "echo$names $port > $D/internet && chmod 600 $D/internet && cat $D/internet" |
         sed 's/^/autostart: internet /'
     say "takes effect at the next start of the own system (icon or boot)"
 }
@@ -165,7 +203,7 @@ case "${1:-}" in
     mode) cmd_mode "${2:-}" ;;
     trigger) cmd_trigger ;;
     update) cmd_update ;;
-    internet) cmd_internet "${2:-}" "${3:-}" ;;
+    internet) shift; cmd_internet "$@" ;;
     status) cmd_status ;;
     remove) cmd_remove ;;
     *) sed -n '2,/^set -eu/p' "$0" | sed '$d; s/^# \{0,1\}//'; exit 2 ;;

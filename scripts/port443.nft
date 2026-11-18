@@ -1,0 +1,25 @@
+#!/usr/sbin/nft -f
+# Optional: the tablet calls port 443 instead of hostd's port 7110. Many
+# networks away from home (hotels, trains, offices) let only web ports out;
+# 443 gets through almost everywhere. This redirects incoming TCP 443 on this
+# laptop to 7110, where hostd listens; hostd itself needs no root for it.
+#
+# The redirect happens before the filters: ufw and the Mullvad marks
+# (mullvad-incoming.nft) see port 7110, so their rules for 7110 cover it.
+# Nothing else on this laptop can then be reached on port 443 from the
+# network (checked: nothing listened there). Locally started connections are
+# not touched.
+#
+# The router opens TCP 443 to this laptop instead of 7110; on the hostd side
+# "huawai config internet_call_port=443", and hostd tells the tablet.
+# Loaded at boot by huawai-incoming.service with the other /etc/huawai/*.nft.
+
+table inet huawai_port443
+delete table inet huawai_port443
+
+table inet huawai_port443 {
+    chain toHostd {
+        type nat hook prerouting priority dstnat; policy accept;
+        tcp dport 443 counter redirect to :7110
+    }
+}

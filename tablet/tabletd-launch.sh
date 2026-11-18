@@ -17,8 +17,12 @@
 #   laptops      IPv4 addresses (one per line) that may reach ports 7100 and 5555;
 #                missing or empty: nobody may (written by "huawai autostart")
 #   key          the pairing key for the encrypted Wi-Fi link
-#   internet     "NAME PORT": the laptop's address from outside (DynDNS name or
-#                IPv4 and the port its router forwards); the tablet calls it
+#   internet     "ADDRESS... PORT": the laptop at home, reached from another
+#                network: up to 4 IPv6 addresses, DynDNS names or IPv4
+#                addresses, then the port its router lets through; the tablet
+#                calls them in turn while the remote control waits
+#   internet.learned  the same, written by tabletd from what hostd sends at
+#                every connection (its current addresses); called first
 #   android-once exists: this start stays Android (the start screen's "Android" tile)
 #   bin/         the programs (tb-home, tabletd, tb-linux, ...)
 #
@@ -150,41 +154,62 @@ if [ -f "$DIR/linux/devuan.img" ] && [ -f "$DIR/linux/linux-root.sh" ]; then
 fi
 # the laptop at home, reached from another network: resolved now, while
 # Android's resolver still runs (the static tabletd cannot resolve names).
-# IPv6 first: behind DS-Lite (common on cable connections) the laptop has no public IPv4.
-call=""
-if [ -f "$DIR/internet" ]; then
-    read -r name port _ < "$DIR/internet"
-    case "$port" in ''|*[!0-9]*) port="" ;; esac
-    # Only shell means: Android's toolbox has no host/nslookup. With -n,
-    # ping6 prints "PING NAME(ADDRESS) ..." (without -n the reverse name).
-    # The tablet's shell is mksh: an unquoted "*(" there starts an extended
-    # pattern, so every parenthesis in a pattern stays escaped.
-    ip6=""
-    set -- $(ping6 -n -c 1 -W 2 "$name" 2>/dev/null) x x
-    if [ "$1" = PING ]; then
-        ip6=${2#*\(}
-        ip6=${ip6%%\)*}
+# $DIR/internet: one or more addresses or names, then the port; the router
+# may give the laptop another IPv6 address after a restart, so several can be
+# kept and tabletd tries them in turn (at most 4). IPv6 first: behind DS-Lite
+# (common on cable connections) the laptop has no public IPv4.
+#
+# resolve NAME: "[IPV6]", "IPV4" or nothing. Only shell means: Android's
+# toolbox has no host/nslookup. With -n, ping6 prints "PING NAME(ADDRESS) ..."
+# (without -n the reverse name). The tablet's shell is mksh: an unquoted "*("
+# there starts an extended pattern, so every parenthesis in a pattern stays
+# escaped.
+resolve() {
+    case "$1" in
+        *[!0-9a-fA-F:]*) ;;
+        *:*:*) echo "[$1]"; return ;;             # an IPv6 address already
+    esac
+    r6=""
+    set -- "$1" $(ping6 -n -c 1 -W 2 "$1" 2>/dev/null) x x
+    if [ "$2" = PING ]; then
+        r6=${3#*\(}
+        r6=${r6%%\)*}
     fi
     # only hex digits and colons, and at least two colons
-    case "$ip6" in *[!0-9a-fA-F:]*) ip6="" ;; *:*:*) ;; *) ip6="" ;; esac
+    case "$r6" in *[!0-9a-fA-F:]*) r6="" ;; *:*:*) echo "[$r6]"; return ;; esac
     # IPv4 only when there is no IPv6 address: ping prints "PING NAME (ADDRESS) ..."
-    ip4=""
-    if [ -z "$ip6" ]; then
-        set -- $(ping -n -c 1 -W 2 "$name" 2>/dev/null) x x x
-        if [ "$1" = PING ]; then
-            ip4=${3#\(}
-            ip4=${ip4%\)}
-        fi
-        case "$ip4" in *[!0-9.]*|'') ip4="" ;; esac
+    set -- "$1" $(ping -n -c 1 -W 2 "$1" 2>/dev/null) x x x
+    if [ "$2" = PING ]; then
+        r4=${4#\(}
+        r4=${r4%\)}
+        case "$r4" in *[!0-9.]*|'') ;; *) echo "$r4" ;; esac
     fi
-    if [ -z "$port" ]; then
+}
+call=""
+if [ -f "$DIR/internet" ]; then
+    read -r line < "$DIR/internet"
+    words=0
+    for w in $line; do words=$((words + 1)); port=$w; done
+    case "$port" in ''|*[!0-9]*) port="" ;; esac
+    if [ "$words" -lt 2 ] || [ -z "$port" ]; then
         log "internet: no valid port in $DIR/internet, no call"
-    elif [ -n "$ip6" ]; then
-        call="--secure-connect [$ip6]:$port"; log "internet: calling $name ($ip6) on port $port"
-    elif [ -n "$ip4" ]; then
-        call="--secure-connect $ip4:$port"; log "internet: calling $name ($ip4) on port $port"
     else
-        log "internet: '$name' not resolved or no route (no IPv6 in this network?), no call"
+        i=0
+        targets=0
+        for name in $line; do
+            i=$((i + 1))
+            [ "$i" -eq "$words" ] && break           # the last word is the port
+            [ "$targets" -ge 4 ] && { log "internet: more than 4 addresses, the rest is left out"; break; }
+            addr=$(resolve "$name")
+            if [ -n "$addr" ]; then
+                call="$call --secure-connect $addr:$port"
+                targets=$((targets + 1))
+                log "internet: calling $name ($addr) on port $port"
+            else
+                log "internet: '$name' not resolved or no route (no IPv6 in this network?)"
+            fi
+        done
+        [ "$targets" -eq 0 ] && log "internet: no address to call"
     fi
 fi
 setprop sys.usb.config adb      # no MTP: nothing would answer it
@@ -199,7 +224,7 @@ ends=0
 # without one only the cable (adb) works
 secure=""
 if [ -f "$DIR/key" ]; then
-    secure="--secure-listen 7100 --key $DIR/key $call"
+    secure="--secure-listen 7100 --key $DIR/key --learn-file $DIR/internet.learned $call"
 else
     log "no pairing key in $DIR/key: no Wi-Fi port, no call from outside (cable only)"
 fi

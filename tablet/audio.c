@@ -45,6 +45,7 @@
 #define MAX_BACKLOG_MS 150
 #define KEEP_BACKLOG_MS 60            /* what is left after throwing away */
 #define PREBUFFER_MS 60               /* reserve before playing (again) */
+#define IDLE_STOP_MS 3000             /* no sound this long: the stream stops */
 #define PREBUFFER_BYTES (RATE / 1000 * PREBUFFER_MS * FRAME_BYTES)
 
 /* the speaker path of /system/etc/tiny_hw.xml ("speaker", path "on") */
@@ -186,6 +187,7 @@ int main(int argc, char **argv)
     struct pcm *pcm;
     struct timespec t0, t1;
     unsigned long long frames = 0, silent_frames = 0, writes = 0, restarts = 0, dry = 0;
+    unsigned long long pauses = 0, idle_frames = 0;
     int buffering = 1, is_fifo, report_fd, failures = 0;
     struct stat st;
 
@@ -284,6 +286,23 @@ int main(int argc, char **argv)
             }
             got -= got % FRAME_BYTES;
         }
+        /* no sound for IDLE_STOP_MS (no laptop, or it plays nothing): stop the
+           stream and wait for sound. Filling in silence forever kept the
+           speaker running for hours without anything to play (seen: 90 min) */
+        idle_frames = got ? 0 : idle_frames + PERIOD_FRAMES;
+        if (idle_frames >= RATE / 1000 * IDLE_STOP_MS) {
+            struct pollfd w = { .fd = 0, .events = POLLIN };
+
+            pcm_stop(pcm);
+            pauses++;
+            while (poll(&w, 1, -1) < 0 && errno == EINTR)
+                ;
+            if (!(w.revents & POLLIN))
+                break;                        /* tabletd ended */
+            idle_frames = 0;
+            buffering = 1;                    /* collect a reserve before playing */
+            continue;
+        }
         memset(buf + got, 0, sizeof(buf) - got);          /* silence for the rest */
         silent_frames += (sizeof(buf) - got) / FRAME_BYTES;
         frames += got / FRAME_BYTES;
@@ -309,10 +328,10 @@ int main(int argc, char **argv)
     clock_gettime(CLOCK_MONOTONIC, &t1);
     /* the balance: playing N frames should take about N/48000 seconds */
     fprintf(stderr, "tb-audio: end: %llu ms of sound and %llu ms of filled-in silence in "
-            "%lld ms, %llu periods, ran dry %llu times, %llu (re)starts\n",
+            "%lld ms, %llu periods, ran dry %llu times, %llu (re)starts, %llu pauses\n",
             frames * 1000 / RATE, silent_frames * 1000 / RATE,
             (long long)(t1.tv_sec - t0.tv_sec) * 1000 + (t1.tv_nsec - t0.tv_nsec) / 1000000,
-            writes, dry, restarts);
+            writes, dry, restarts, pauses);
     pcm_close(pcm);
     return 0;
 }

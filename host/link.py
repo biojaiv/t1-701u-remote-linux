@@ -27,6 +27,8 @@ AUDIO = 0x08             # u32 rate, u8 channels, u8 0, S16LE samples (at most 1
 INFO_AUDIO = 0x08        # INFO flags: tabletd plays AUDIO (its player is ready)
 HOME = 0x09              # no payload: tabletd ends, the tablet shows its start screen
 INFO_HOME = 0x10         # INFO flags: tabletd understands HOME
+ADDRESSES = 0x0A         # u16 port, u8 count, count x 16-byte IPv6: where the tablet calls us
+INFO_ADDRESSES = 0x20    # INFO flags: tabletd keeps ADDRESSES for its calls
 INFO, ACK, TOUCH, KEY, STATUS, PONG = 0x41, 0x42, 0x43, 0x44, 0x45, 0x46
 FMT_RGB565, FMT_RGB565_LZ4 = 0, 1
 
@@ -231,6 +233,12 @@ class Link:
 
 
 ACK_TIMEOUT = 5.0      # seconds without ACK before the link counts as dead
+# seconds without anything from the tablet (it answers every PING with a
+# PONG) before the link counts as dead; the same limit tabletd uses. Without
+# it a tablet that vanished without closing the connection (another network,
+# a new address) kept the link "alive" while no frame was in flight, and its
+# new call was refused as long as that lasted (reproduced: over 30 s).
+SILENCE_TIMEOUT = 5.0
 PING_INTERVAL = 1.0
 RETRY_INTERVAL = 1.0
 RETRY_SLOW = 5.0         # after several failures in a row
@@ -274,7 +282,7 @@ class Session:
         self.seq = 0
         self.bytes_sent = 0
         self._buf = b""
-        self._last_tx = self._next_try = 0.0
+        self._last_tx = self._last_rx = self._next_try = 0.0
         self._ping = 0
         self._failures = 0
         self.listener = None
@@ -344,8 +352,11 @@ class Session:
         """A connection the tablet opened to us, once its handshake (in a
         thread) has succeeded: (Link, caller address), else None. Never
         waits. Up to MAX_HANDSHAKES at once (a new caller pushes out the
-        oldest waiting one); callers while connected and, for 2 s, an address
-        whose handshake failed are closed at once."""
+        oldest waiting one); for 2 s, an address whose handshake failed is
+        closed at once. Callers are heard while connected, too: the tablet
+        only calls when it has no session, so a caller that proves the key
+        means our link is dead even if it does not look so yet (pump()
+        then replaces it)."""
         if not self.listener:
             return None
         now = time.monotonic()
@@ -359,8 +370,8 @@ class Session:
                 print(f"link: incoming connection from {peer} refused: {box.get('error')}",
                       flush=True)
                 self._paused[peer] = now + 2.0
-            elif self.link is not None or result is not None:
-                box["link"].close()       # connected another way in the meantime
+            elif result is not None:
+                box["link"].close()       # two proven calls at once: the first one wins
             else:
                 result = (box["link"], peer)
         self._incoming = still
@@ -374,8 +385,8 @@ class Session:
             except OSError:
                 break
             peer = address[0]
-            if self.link is not None or result is not None or peer in self._paused:
-                sock.close()              # busy, or this address just failed
+            if result is not None or peer in self._paused:
+                sock.close()              # a call is just being taken, or this address just failed
                 continue
             if len(self._incoming) >= MAX_HANDSHAKES:
                 # all places taken: the oldest waiting caller makes room, so
@@ -427,6 +438,7 @@ class Session:
 
     def _connected(self, events, now):
         self._failures = 0
+        self._last_rx = now
         self.link.sock.setblocking(False)
         self.width, self.height = self.link.width, self.link.height
         self._flight.clear()
@@ -530,18 +542,27 @@ class Session:
                     time.sleep(min(timeout, 0.05))
                 return events
         if self.listener:
-            self._accept_incoming()       # while connected: close further callers at once
+            incoming = self._accept_incoming()
+            if incoming is not None:
+                # the tablet called again with the key: its old session is gone
+                self._drop(events, "replaced by a new call from the tablet")
+                self.link, peer = incoming
+                self.route = "wifi" if is_local(peer, local_networks()) else "internet"
+                self._connected(events, time.monotonic())
         try:
             readable, _, _ = select.select([self.link.sock], [], [], timeout)
             if readable:
                 chunk = self.link.sock.recv(65536)
                 if not chunk:
                     raise LinkError("tabletd closed the connection")
+                self._last_rx = time.monotonic()
                 self._buf += self.link.unwrap(chunk)
                 self._parse(events)
             now = time.monotonic()
             if self._flight and now - self._flight[0][1] > ACK_TIMEOUT:
                 raise LinkError("no ACK within 5 seconds")
+            if now - self._last_rx > SILENCE_TIMEOUT:
+                raise LinkError("tablet silent for 5 seconds")
             if now - self._last_tx >= PING_INTERVAL:
                 self._ping = (self._ping + 1) & 0xFFFFFFFF
                 self._send(_HEADER.pack(PING, 4) + struct.pack("<I", self._ping))

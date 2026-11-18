@@ -4,6 +4,7 @@ handshake and the proof of the key are the same as on the Wi-Fi link."""
 import ipaddress
 import os
 import pathlib
+import signal
 import socket
 import subprocess
 import sys
@@ -42,8 +43,17 @@ class Calling(unittest.TestCase):
         self.proc = subprocess.Popen(
             [str(TABLETD), "--fb", str(d / "fb.raw"), "--geom", f"{W}x{H}",
              "--listen", f"abstract:tabletd-inet-{os.getpid()}-{self.port}",
-             "--secure-connect", self.target.format(port=self.port), "--key", str(key_file)],
+             *self.connect_args(), "--key", str(key_file)],
             stderr=self.err)
+
+    def connect_args(self):
+        targets = self.target if isinstance(self.target, tuple) else (self.target,)
+        args = []
+        for target in targets:
+            args += ["--secure-connect", target.format(port=self.port, closed=self.closed)]
+        return args
+
+    closed = None
 
     def tearDown(self):
         self.session.close()
@@ -82,6 +92,49 @@ class Works(Calling):
         self.session.link.close()
         self.session.link = None
         self.assertIsNotNone(self.pump_until("connected", timeout=15), "no second call")
+
+
+class TabletVanishes(Calling):
+    """The tablet disappears without closing the connection (another network,
+    a new address; here: tabletd stopped with SIGSTOP, so nothing answers and
+    nothing is closed). hostd must let go of that link and take the tablet's
+    next call; before, it kept the dead link and refused every new call."""
+
+    def events_for(self, seconds, until):
+        seen = []
+        deadline = time.monotonic() + seconds
+        while time.monotonic() < deadline and not until(seen):
+            seen += self.session.pump(0.05)
+        return seen
+
+    def freeze_first_tablet(self):
+        self.assertIsNotNone(self.pump_until("connected"), "first call not accepted")
+        os.kill(self.proc.pid, signal.SIGSTOP)
+        self.addCleanup(lambda: self.proc.poll() is None and os.kill(self.proc.pid, signal.SIGCONT))
+
+    def test_silent_link_is_dropped(self):
+        self.freeze_first_tablet()
+        start = time.monotonic()
+        seen = self.events_for(10, lambda ev: any(e[0] == "disconnected" for e in ev))
+        dropped = [e for e in seen if e[0] == "disconnected"]
+        self.assertTrue(dropped, "hostd kept the silent link")
+        self.assertIn("silent", dropped[0][1])
+        self.assertLess(time.monotonic() - start, 8)
+
+    def test_new_call_replaces_the_dead_link(self):
+        self.freeze_first_tablet()
+        d = pathlib.Path(self.tmp.name)
+        second = subprocess.Popen(
+            [str(TABLETD), "--fb", str(d / "fb2.raw"), "--geom", f"{W}x{H}",
+             "--listen", f"abstract:tabletd-inet2-{os.getpid()}-{self.port}",
+             "--secure-connect", f"[::1]:{self.port}", "--key", str(d / "key")],
+            stderr=subprocess.DEVNULL)
+        self.addCleanup(lambda: (second.kill(), second.wait()))
+        seen = self.events_for(4, lambda ev: [e[0] for e in ev][-1:] == ["connected"])
+        kinds = [e[0] for e in seen]
+        self.assertIn("disconnected", kinds, "the dead link was not given up")
+        self.assertEqual(kinds[-1:], ["connected"], "the new call was not taken within 4 s")
+        self.assertEqual(self.session.link.sock.getpeername()[0], "::1")   # the second tablet
 
 
 class OverIPv6(Calling):
@@ -218,6 +271,24 @@ class SilentCaller(unittest.TestCase):
             caller.close()
 
 
+class SeveralAddresses(Calling):
+    """The laptop's address from the router can change: the tablet keeps
+    several and moves on to the next after a failed call."""
+    target = ("127.0.0.1:{closed}", "[::1]:{port}")
+
+    def setUp(self):
+        self.closed = free_port()                   # nobody listens there
+        super().setUp()
+
+    def test_second_address_after_the_first_fails(self):
+        event = self.pump_until("connected", timeout=15)
+        self.assertIsNotNone(event, "the second address was not tried")
+        self.assertEqual(self.session.link.sock.getpeername()[0], "::1")
+        log = (pathlib.Path(self.tmp.name) / "stderr.txt").read_text()
+        # the failed first address is named, with the reason, then the second one is used
+        self.assertIn(f"call to 127.0.0.1:{self.closed} failed: connect: Connection refused", log)
+
+
 class BadTarget(unittest.TestCase):
     def test_malformed_addresses_are_refused(self):
         with tempfile.TemporaryDirectory() as d:
@@ -254,3 +325,18 @@ class Stranger(Calling):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TooManyAddresses(unittest.TestCase):
+    def test_at_most_four(self):
+        with tempfile.TemporaryDirectory() as d:
+            key = pathlib.Path(d) / "key"
+            key.write_bytes(os.urandom(32))
+            key.chmod(0o600)
+            args = []
+            for port in range(7111, 7116):
+                args += ["--secure-connect", f"127.0.0.1:{port}"]
+            done = subprocess.run([str(TABLETD), "--fb", str(pathlib.Path(d) / "fb"), "--geom",
+                                   f"{W}x{H}", "--listen", "abstract:x-too-many", *args,
+                                   "--key", str(key)], capture_output=True, timeout=5)
+            self.assertEqual(done.returncode, 2)

@@ -417,6 +417,33 @@ class Internet(LaunchCase):
         (self.data / "internet").write_text("2001:db8::5 7110\n")
         self.assertIn("--secure-connect [2001:db8::5]:7110", self.home_call())
 
+    def test_several_addresses_in_order(self):
+        """The router may give the laptop a new address: several are kept,
+        tabletd tries them in turn."""
+        (self.data / "internet").write_text("2001:db8::5 home6.example.net 192.0.2.5 7110\n")
+        call = self.home_call()
+        self.assertIn("--secure-connect [2001:db8::5]:7110 --secure-connect [2001:db8::80]:7110 "
+                      "--secure-connect 192.0.2.5:7110", call)
+
+    def test_unresolved_entries_are_left_out(self):
+        (self.data / "internet").write_text("nonexistent.example 2001:db8::5 7110\n")
+        call = self.home_call()
+        self.assertEqual(call.count("--secure-connect"), 1)
+        self.assertIn("--secure-connect [2001:db8::5]:7110", call)
+        self.assertIn("'nonexistent.example' not resolved", self.log())
+
+    def test_at_most_four_addresses(self):
+        (self.data / "internet").write_text(
+            "2001:db8::1 2001:db8::2 2001:db8::3 2001:db8::4 2001:db8::5 7110\n")
+        call = self.home_call()
+        self.assertEqual(call.count("--secure-connect"), 4)
+        self.assertNotIn("2001:db8::5", call)
+        self.assertIn("more than 4 addresses", self.log())
+
+    def test_port_only_means_no_call(self):
+        (self.data / "internet").write_text("7110\n")
+        self.assertNotIn("--secure-connect", self.home_call())
+
     def test_ipv6_wins_when_both_exist(self):
         (self.data / "internet").write_text("both.example.net 7110\n")
         self.assertIn("--secure-connect [2001:db8::9]:7110", self.home_call())

@@ -38,6 +38,8 @@ int proto_check_len(uint8_t type, uint32_t len)
     case MSG_COPY:      return len == COPY_LEN ? 0 : -1;
     case MSG_AUDIO:     return len > AUDIO_HDR && len <= AUDIO_MAX_LEN ? 0 : -1;
     case MSG_HOME:      return len == 0 ? 0 : -1;
+    case MSG_ADDRESSES: return len >= 3 + 16 && len <= 3 + 16 * ADDRESSES_MAX &&
+                               (len - 3) % 16 == 0 ? 0 : -1;
     default:            return -1;
     }
 }

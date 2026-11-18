@@ -15,6 +15,8 @@
 #define INFO_COPY 0x04       /* INFO flags: MSG_COPY is understood */
 #define INFO_AUDIO 0x08      /* INFO flags: MSG_AUDIO is played (tb-audio is ready) */
 #define INFO_HOME 0x10       /* INFO flags: MSG_HOME is understood */
+#define INFO_ADDRESSES 0x20  /* INFO flags: MSG_ADDRESSES is kept (--learn-file) */
+#define ADDRESSES_MAX 4      /* MSG_ADDRESSES: at most this many addresses */
 #define AUDIO_HDR 6          /* u32 rate, u8 channels, u8 reserved */
 #define AUDIO_MAX_LEN (AUDIO_HDR + 48000 / 10 * 2 * 2)   /* at most 100 ms */
 #define NONCE_LEN 16
@@ -26,6 +28,8 @@ enum {
     MSG_COPY = 0x07,      /* u16 sx, sy, w, h, dx, dy: move an area (scrolling) */
     MSG_AUDIO = 0x08,     /* u32 rate, u8 channels, u8 0, S16LE samples (laptop's sound) */
     MSG_HOME = 0x09,      /* no payload: end the remote control, back to the start screen */
+    MSG_ADDRESSES = 0x0A, /* u16 port, u8 count (1..4), count x 16-byte IPv6 address: where
+                             the tablet calls the laptop from another network */
     MSG_INFO = 0x41, MSG_ACK = 0x42, MSG_TOUCH = 0x43,
     MSG_KEY = 0x44, MSG_STATUS = 0x45, MSG_PONG = 0x46,
 };

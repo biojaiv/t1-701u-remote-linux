@@ -53,9 +53,24 @@ static int secure_fd = -1;
    the laptop's router); the laptop then speaks first, exactly as if it had
    connected here (hello, proof of the key) */
 static int connect_fd = -1, have_connect;
-static struct sockaddr_storage connect_addr;   /* IPv4 or IPv6 */
-static socklen_t connect_addr_len;
+/* --secure-connect may be given up to MAX_TARGETS times (the laptop's address
+   from the router can change; several are tried in turn): a call that fails
+   moves on to the next one, one that connects stays */
+#define MAX_TARGETS 4
+static struct sockaddr_storage connect_addrs[MAX_TARGETS];   /* IPv4 or IPv6 */
+static socklen_t connect_lens[MAX_TARGETS];
+static const char *connect_specs[MAX_TARGETS];
+static int n_targets, target;
 static long long connect_since_ms, next_connect_ms;
+/* how the last call went, on the waiting screen (NULL: no calls). Away from
+   home the screen is the only place to see why the laptop does not come. */
+static const char *call_text, *page_call;
+static int pend_from_call;           /* the pending connection is our own call */
+/* --learn-file: the laptop's addresses for calls from another network, as
+   hostd sends them at every connection (MSG_ADDRESSES); opened before the
+   privileges are dropped, read at the next start */
+static int learn_fd = -1;
+static char learned_specs[ADDRESSES_MAX][64];
 static uint8_t sec_key[SEC_KEY_LEN];
 /* an encrypted connection that has not yet proved the shared key; it does
    not disturb the active client until it has */
@@ -119,6 +134,8 @@ static void draw_status_page(int force);
 static void drop_client(const char *why)
 {
     next_connect_ms = 0;     /* after a session, call the laptop again soon */
+    if (have_connect)
+        call_text = "Home: calling ...";
     if (client >= 0) {
         fprintf(stderr, "tabletd: client closed: %s\n", why);
         close(client);
@@ -189,8 +206,9 @@ static void draw_status_page(int force)
         cap = -1;
     ui_address(page_iface, addr, sizeof(addr));
     if (!force && minute == page_minute && cap == page_cap && charging == page_charging &&
-        strcmp(addr, page_addr) == 0)
+        strcmp(addr, page_addr) == 0 && call_text == page_call)
         return;
+    page_call = call_text;
     page_minute = minute;
     page_cap = cap;
     page_charging = charging;
@@ -204,6 +222,9 @@ static void draw_status_page(int force)
                 UI_TEXT_MAIN, clock_text);
     canvas_text(&c, &face_text, (cw - text_width(&face_text, date_text)) / 2, ch / 2 + 100,
                 UI_TEXT_SUB, date_text);
+    if (call_text)
+        canvas_text(&c, &face_text, (cw - text_width(&face_text, call_text)) / 2, ch - 88,
+                    UI_TEXT_DIM, call_text);
     x = (cw - text_width(&face_text, "•") - text_width(&face_text, " Ready – waiting for the laptop")) / 2;
     x = canvas_text(&c, &face_text, x, ch - 48, UI_AMBER, "•");
     canvas_text(&c, &face_text, x, ch - 48, UI_TEXT_DIM, " Ready – waiting for the laptop");
@@ -388,6 +409,86 @@ static int play_audio(void)
     return 0;
 }
 
+/* 2000::/3, global unicast: what a router can open to the internet (no
+   unique-local fd00::/8, no link-local fe80::/10) */
+static int is_global_ipv6(const uint8_t *a)
+{
+    return (a[0] & 0xE0) == 0x20;
+}
+
+/* MSG_ADDRESSES: kept as "ADDRESS... PORT" in the learn file, written only
+   when it changed (flash). Content that does not fit is ignored; it comes
+   from the laptop that proved the key, so the session stays. */
+static int learn_addresses(void)
+{
+    char text[ADDRESSES_MAX * (INET6_ADDRSTRLEN + 1) + 8], old[sizeof(text)];
+    unsigned count = payload[2], port = rd16(payload);
+    size_t len = 0;
+    ssize_t have;
+
+    if (learn_fd < 0)
+        return 0;
+    if (count < 1 || count > ADDRESSES_MAX || pay_len != 3 + 16 * count || port == 0) {
+        fprintf(stderr, "tabletd: the laptop's addresses ignored: malformed\n");
+        return 0;
+    }
+    for (unsigned i = 0; i < count; i++) {
+        const uint8_t *a = payload + 3 + 16 * i;
+        char addr[INET6_ADDRSTRLEN];
+
+        if (!is_global_ipv6(a) || !inet_ntop(AF_INET6, a, addr, sizeof(addr))) {
+            fprintf(stderr, "tabletd: the laptop's addresses ignored: not global IPv6\n");
+            return 0;
+        }
+        len += (size_t)snprintf(text + len, sizeof(text) - len, "%s ", addr);
+    }
+    len += (size_t)snprintf(text + len, sizeof(text) - len, "%u\n", port);
+    have = pread(learn_fd, old, sizeof(old), 0);
+    if (have == (ssize_t)len && memcmp(old, text, len) == 0)
+        return 0;
+    if (ftruncate(learn_fd, 0) < 0 || pwrite(learn_fd, text, len, 0) != (ssize_t)len ||
+        fsync(learn_fd) < 0)
+        fprintf(stderr, "tabletd: cannot keep the laptop's addresses: %s\n", strerror(errno));
+    else
+        fprintf(stderr, "tabletd: kept the laptop's addresses for calls from outside: %s", text);
+    return 0;
+}
+
+/* the learn file at the start: up to ADDRESSES_MAX "[IPV6]:PORT" specs in
+   learned_specs; a file that does not fit is not used at all */
+static int load_learned(void)
+{
+    char text[256], *save = NULL, *words[ADDRESSES_MAX + 1], *end;
+    ssize_t len = learn_fd >= 0 ? pread(learn_fd, text, sizeof(text) - 1, 0) : -1;
+    int nw = 0;
+    long port;
+
+    if (len <= 0)
+        return 0;
+    text[len] = '\0';
+    for (char *w = strtok_r(text, " \n", &save); w; w = strtok_r(NULL, " \n", &save)) {
+        if (nw == ADDRESSES_MAX + 1)
+            goto bad;
+        words[nw++] = w;
+    }
+    if (nw < 2)
+        goto bad;
+    port = strtol(words[nw - 1], &end, 10);
+    if (*end != '\0' || port < 1 || port > 65535)
+        goto bad;
+    for (int i = 0; i < nw - 1; i++) {
+        struct in6_addr a;
+
+        if (inet_pton(AF_INET6, words[i], &a) != 1 || !is_global_ipv6(a.s6_addr))
+            goto bad;
+        snprintf(learned_specs[i], sizeof(learned_specs[i]), "[%s]:%ld", words[i], port);
+    }
+    return nw - 1;
+bad:
+    fprintf(stderr, "tabletd: the kept addresses are not usable, ignored\n");
+    return 0;
+}
+
 /* returns 0 if the frame was valid, -1 if the client must be dropped */
 static int handle_frame(uint8_t type)
 {
@@ -455,6 +556,8 @@ static int handle_frame(uint8_t type)
         return 0;   /* pairing is added in phase 6; accepted and ignored */
     case MSG_AUDIO:
         return play_audio();
+    case MSG_ADDRESSES:
+        return learn_addresses();
     case MSG_HOME:
         /* the "Back" button of the laptop's menus: like holding both volume
            keys, the remote control ends and tb-home shows its start screen */
@@ -615,7 +718,7 @@ static void start_session(int fd, const struct sec *keys)
     wr16(info + 2, (uint16_t)fb.w);
     wr16(info + 4, (uint16_t)fb.h);
     info[6] = (secure ? INFO_ENCRYPTED : 0) | INFO_COPY | INFO_HOME |
-              (audio_fd >= 0 ? INFO_AUDIO : 0);
+              (audio_fd >= 0 ? INFO_AUDIO : 0) | (learn_fd >= 0 ? INFO_ADDRESSES : 0);
     memset(info + 7, 0, NONCE_LEN);
     rnd = open("/dev/urandom", O_RDONLY);
     if (rnd >= 0) {
@@ -675,6 +778,11 @@ static void drop_pending(const char *why)
 {
     if (pend_fd >= 0) {
         fprintf(stderr, "tabletd: encrypted connection refused: %s\n", why);
+        if (pend_from_call)
+            call_text = strstr(why, "closed") || strstr(why, "read error") ? "Home: the laptop hung up"
+                      : strstr(why, "5 seconds") ? "Home: handshake too slow"
+                      : strstr(why, "replaced") ? call_text
+                                                 : "Home: pairing key not accepted";
         close(pend_fd);
         pend_fd = -1;
         sec_wipe(&pend_sec);
@@ -690,6 +798,7 @@ static void accept_secure(void)
         return;
     drop_pending("replaced by a newer attempt");
     pend_fd = fd;
+    pend_from_call = 0;
     pend_stage = 0;
     pend_have = 0;
     pend_since_ms = now_ms();
@@ -697,16 +806,55 @@ static void accept_secure(void)
 }
 
 /* --secure-connect: start a TCP connection to the laptop without waiting */
+static void next_target(void)
+{
+    if (n_targets > 1)
+        target = (target + 1) % n_targets;   /* call_failed names each address */
+}
+
+/* why a call failed: in the log once per address and new reason (it is
+   retried every 5 s), on the waiting screen every time */
+static void call_failed(const char *what, int err)
+{
+    static int last_err[MAX_TARGETS] = { -1, -1, -1, -1 };
+    int v6 = connect_addrs[target].ss_family == AF_INET6;
+
+    if (err != last_err[target])
+        fprintf(stderr, "tabletd: call to %s failed: %s: %s\n", connect_specs[target], what,
+                strerror(err));
+    last_err[target] = err;
+    if (strcmp(what, "socket") == 0)
+        call_text = err == EACCES || err == EPERM ? "Home: network use not allowed"
+                                                  : "Home: call failed";
+    else if (err == ENETUNREACH || err == EADDRNOTAVAIL || err == EAFNOSUPPORT)
+        call_text = v6 ? "Home: no IPv6 in this network" : "Home: no network";
+    else if (err == EHOSTUNREACH)
+        call_text = "Home: laptop not reachable";
+    else if (err == ETIMEDOUT)
+        call_text = "Home: no answer";
+    else if (err == ECONNREFUSED)
+        call_text = "Home: refused - hostd running?";
+    else if (err == EACCES || err == EPERM)
+        call_text = "Home: blocked by a firewall";
+    else
+        call_text = "Home: call failed";
+}
+
 static void start_connect(void)
 {
-    int fd = socket(connect_addr.ss_family, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
+    int fd = socket(connect_addrs[target].ss_family, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
 
     next_connect_ms = now_ms() + CONNECT_RETRY_MS;
-    if (fd < 0)
+    if (fd < 0) {
+        call_failed("socket", errno);
+        next_target();
         return;
-    if (connect(fd, (struct sockaddr *)&connect_addr, connect_addr_len) < 0 &&
+    }
+    if (connect(fd, (struct sockaddr *)&connect_addrs[target], connect_lens[target]) < 0 &&
         errno != EINPROGRESS) {
+        call_failed("connect", errno);
         close(fd);
+        next_target();                   /* e.g. no route to this address here */
         return;
     }
     connect_fd = fd;
@@ -722,12 +870,15 @@ static void finish_connect(void)
 
     connect_fd = -1;
     if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &err, &len) < 0 || err != 0) {
+        call_failed("connect", err ? err : errno);
         close(fd);
+        next_target();
         return;
     }
     fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) & ~O_NONBLOCK);
     drop_pending("replaced by the connection to the laptop");
     pend_fd = fd;
+    pend_from_call = 1;
     pend_stage = 0;
     pend_have = 0;
     pend_since_ms = now_ms();
@@ -843,9 +994,16 @@ static int drop_privileges(const char *spec)
     unsigned uid, gid;
     char tail;
 
+    /* aid_inet (3003) stays: Android's kernel lets only that group open
+       network sockets, and tabletd opens some after this (the call to the
+       laptop, the Wi-Fi address on the status page). Dropping it made every
+       call fail with "socket: Permission denied" and the page show "No Wi-Fi"
+       (seen on the tablet in another network, 2026-11-18). */
+    gid_t keep[] = { 3003 };
+
     if (sscanf(spec, "%u:%u%c", &uid, &gid, &tail) != 2 || uid == 0 || gid == 0)
         return -1;
-    if (setgroups(0, NULL) < 0 || setgid(gid) < 0 || setuid(uid) < 0)
+    if (setgroups(1, keep) < 0 || setgid(gid) < 0 || setuid(uid) < 0)
         return -1;
     return setuid(0) == 0 ? -1 : 0;   /* must not be able to get root back */
 }
@@ -893,9 +1051,50 @@ static void usage(void)
             "               [--status-page] [--rotation none|counterclockwise|clockwise]\n"
             "               [--rotation-file FILE] [--idle-dim SECONDS]\n"
             "               [--secure-listen [IPV4:]PORT --key FILE] [--iface NAME]\n"
-            "               [--secure-connect IPV4:PORT | [IPV6]:PORT]   (with --key: call the laptop)\n"
+            "               [--secure-connect IPV4:PORT | [IPV6]:PORT]...   (with --key: call the laptop;\n"
+            "                                  up to 4 addresses, tried in turn)\n"
+            "               [--learn-file FILE]   (keeps the laptop's addresses for calls; with\n"
+            "                                  --key, those kept are called first)\n"
             "               [--tz-file FILE] [--power-key handle|ignore]\n"
             "       tabletd --version\n");
+}
+
+/* IPV4:PORT or [IPV6]:PORT; the port only digits */
+static int parse_target(const char *spec, struct sockaddr_storage *ss, socklen_t *len)
+{
+    const char *colon = strrchr(spec, ':');
+    const char *start = spec, *end = colon;
+    char host[64], *rest = NULL;
+    long port = colon ? strtol(colon + 1, &rest, 10) : 0;
+    int v6 = spec[0] == '[';
+
+    if (!rest || rest == colon + 1 || *rest != '\0')
+        port = 0;
+    if (v6) {
+        start = spec + 1;
+        end = colon && colon > spec && colon[-1] == ']' ? colon - 1 : NULL;
+    }
+    if (!colon || !end || end <= start || (size_t)(end - start) >= sizeof(host) ||
+        port <= 0 || port > 65535)
+        return -1;
+    memcpy(host, start, (size_t)(end - start));
+    host[end - start] = '\0';
+    memset(ss, 0, sizeof(*ss));
+    if (v6) {
+        struct sockaddr_in6 *a = (struct sockaddr_in6 *)ss;
+
+        a->sin6_family = AF_INET6;
+        a->sin6_port = htons((uint16_t)port);
+        *len = sizeof(*a);
+        return inet_pton(AF_INET6, host, &a->sin6_addr) == 1 ? 0 : -1;
+    } else {
+        struct sockaddr_in *a = (struct sockaddr_in *)ss;
+
+        a->sin_family = AF_INET;
+        a->sin_port = htons((uint16_t)port);
+        *len = sizeof(*a);
+        return inet_pton(AF_INET, host, &a->sin_addr) == 1 ? 0 : -1;
+    }
 }
 
 int main(int argc, char **argv)
@@ -903,7 +1102,8 @@ int main(int argc, char **argv)
     const char *fb_path = NULL, *geom = NULL, *drop = NULL, *log_path = NULL;
     const char *audio_program = NULL;
     const char *listen_spec = "abstract:tabletd", *key_path = NULL, *secure_spec = NULL;
-    const char *connect_spec = NULL;
+    const char *learn_path = NULL;
+    int n_specs = 0;
 
     for (int i = 1; i < argc; i++) {
         const char *a = argv[i], *v = i + 1 < argc ? argv[i + 1] : NULL;
@@ -985,7 +1185,13 @@ int main(int argc, char **argv)
         } else if (strcmp(a, "--secure-listen") == 0) {
             secure_spec = v, i++;
         } else if (strcmp(a, "--secure-connect") == 0) {
-            connect_spec = v, i++;
+            if (n_specs >= MAX_TARGETS) {
+                fprintf(stderr, "tabletd: at most %d --secure-connect addresses\n", MAX_TARGETS);
+                return 2;
+            }
+            connect_specs[n_specs++] = v, i++;
+        } else if (strcmp(a, "--learn-file") == 0) {
+            learn_path = v, i++;
         } else if (strcmp(a, "--key") == 0) {
             key_path = v, i++;
         } else if (strcmp(a, "--drop") == 0) {
@@ -1058,56 +1264,54 @@ int main(int argc, char **argv)
         }
         fprintf(stderr, "tabletd: encrypted connections on %s\n", secure_spec);
     }
-    if (connect_spec) {
-        /* IPV4:PORT or [IPV6]:PORT */
-        const char *colon = strrchr(connect_spec, ':');
-        const char *start = connect_spec, *end = colon;
-        char host[64], *rest = NULL;
-        long port = colon ? strtol(colon + 1, &rest, 10) : 0;
-        int v6 = connect_spec[0] == '[';
+    if (learn_path) {
+        /* opened as root, kept after the privileges are dropped */
+        learn_fd = open(learn_path, O_RDWR | O_CREAT | O_CLOEXEC, 0600);
+        if (learn_fd < 0)
+            fprintf(stderr, "tabletd: cannot open %s: %s\n", learn_path, strerror(errno));
+    }
+    {
+        /* the addresses the laptop sent last time first (they are the newest),
+           then the given ones; each address once, at most MAX_TARGETS */
+        const char *all[ADDRESSES_MAX + MAX_TARGETS];
+        int n_all = key_path ? load_learned() : 0;
 
-        if (!rest || rest == colon + 1 || *rest != '\0')
-            port = 0;                   /* digits only after the colon */
+        for (int t = 0; t < n_all; t++)
+            all[t] = learned_specs[t];
+        for (int t = 0; t < n_specs; t++)
+            all[n_all++] = connect_specs[t];
+        for (int t = 0; t < n_all; t++) {
+            struct sockaddr_storage ss;
+            socklen_t len;
+            int seen = 0;
 
-        if (v6) {
-            start = connect_spec + 1;
-            end = colon && colon > connect_spec && colon[-1] == ']' ? colon - 1 : NULL;
-        }
-        if (!colon || !end || end <= start || (size_t)(end - start) >= sizeof(host) ||
-            port <= 0 || port > 65535) {
-            usage();
-            return 2;
-        }
-        memcpy(host, start, (size_t)(end - start));
-        host[end - start] = '\0';
-        memset(&connect_addr, 0, sizeof(connect_addr));
-        if (v6) {
-            struct sockaddr_in6 *a = (struct sockaddr_in6 *)&connect_addr;
-
-            a->sin6_family = AF_INET6;
-            a->sin6_port = htons((uint16_t)port);
-            connect_addr_len = sizeof(*a);
-            if (inet_pton(AF_INET6, host, &a->sin6_addr) != 1) {
+            if (parse_target(all[t], &ss, &len) < 0) {
                 usage();
                 return 2;
             }
-        } else {
-            struct sockaddr_in *a = (struct sockaddr_in *)&connect_addr;
-
-            a->sin_family = AF_INET;
-            a->sin_port = htons((uint16_t)port);
-            connect_addr_len = sizeof(*a);
-            if (inet_pton(AF_INET, host, &a->sin_addr) != 1) {
-                usage();
-                return 2;
+            for (int j = 0; j < n_targets; j++)
+                seen |= connect_lens[j] == len && memcmp(&connect_addrs[j], &ss, len) == 0;
+            if (seen)
+                continue;
+            if (n_targets == MAX_TARGETS) {
+                fprintf(stderr, "tabletd: more than %d addresses, %s left out\n", MAX_TARGETS,
+                        all[t]);
+                continue;
             }
+            connect_addrs[n_targets] = ss;
+            connect_lens[n_targets] = len;
+            connect_specs[n_targets++] = all[t];
         }
+    }
+    if (n_targets) {
         if (!key_path || (!secure_spec && sec_load_key(key_path, sec_key) < 0)) {
             fprintf(stderr, "tabletd: --secure-connect needs --key with a private 32-byte file\n");
             return 1;
         }
         have_connect = 1;
-        fprintf(stderr, "tabletd: calling the laptop at %s\n", connect_spec);
+        call_text = "Home: calling ...";
+        for (int t = 0; t < n_targets; t++)
+            fprintf(stderr, "tabletd: calling the laptop at %s\n", connect_specs[t]);
     }
     if (audio_program)
         start_audio(audio_program, drop);
@@ -1185,6 +1389,8 @@ int main(int argc, char **argv)
         } else if (connect_fd >= 0 && now_ms() - connect_since_ms >= CONNECT_TIMEOUT_MS) {
             close(connect_fd);
             connect_fd = -1;
+            call_failed("no answer within 5 s", ETIMEDOUT);
+            next_target();                   /* no answer from this address */
         }
         for (int i = 0; i < ninputs; i++) {
             if (!(p[5 + i].revents & (POLLIN | POLLHUP | POLLERR)))

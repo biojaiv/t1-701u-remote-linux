@@ -88,52 +88,118 @@ both cases.
   systemctl --user restart huawai-hostd
   ```
   `hostd` then accepts the tablet's call on this port over IPv4 and IPv6 (port 0 switches it off).
-  Ports below 1024 are not accepted.
+  Ports below 1024 are not accepted (`hostd` runs without root).
 - **Firewall:** open the port in the laptop's firewall. With ufw: `sudo ufw allow 7110/tcp`.
 - **Mullvad VPN (optional):** If you use Mullvad VPN, the `hostd` service runs outside the tunnel
   (`mullvad-exclude`, used automatically when it is installed). Mullvad's firewall still drops
   incoming public IPv6, even with "LAN sharing" enabled. Following Mullvad's own instructions for
-  incoming traffic, `scripts/mullvad-incoming.nft` marks only TCP port 7110 as excluded; it is
-  loaded at boot by `scripts/huawai-incoming.service`:
+  incoming traffic, `scripts/mullvad-incoming.nft` marks only TCP port 7110 as excluded.
+- **Port 443 (optional, recommended for travelling):** many networks away from home (hotels,
+  trains, offices) let only web ports out, so a call to port 7110 never leaves them.
+  `scripts/port443.nft` redirects incoming TCP 443 on the laptop to 7110; the tablet then calls 443.
+  The redirect comes before the firewall and the Mullvad marks, so their rules for 7110 cover it.
+  Nothing else on the laptop can be reached on port 443 from the network afterwards. Tell `hostd`
+  which port the tablet calls:
+  ```
+  huawai config internet_call_port=443
+  ```
+- Both rule files are loaded at boot by `scripts/huawai-incoming.service` (it loads every
+  `/etc/huawai/*.nft`; install only the ones you want):
   ```
   sudo nft -c -f scripts/mullvad-incoming.nft          # check only
+  sudo nft -c -f scripts/port443.nft                   # check only
   sudo install -D -m 644 scripts/mullvad-incoming.nft /etc/huawai/mullvad-incoming.nft
+  sudo install -D -m 644 scripts/port443.nft /etc/huawai/port443.nft
   sudo install -m 644 scripts/huawai-incoming.service /etc/systemd/system/
-  sudo systemctl daemon-reload && sudo systemctl enable --now huawai-incoming
+  sudo systemctl daemon-reload && sudo systemctl enable huawai-incoming
+  sudo systemctl restart huawai-incoming
   ```
-  Remove it with `sudo systemctl disable --now huawai-incoming`. The port 7110 is written into
-  `scripts/mullvad-incoming.nft`; if you choose a different port, change it there as well.
+  Remove them with `sudo systemctl disable --now huawai-incoming`. The port 7110 is written into
+  both files; if you choose a different `internet_port`, change it there as well.
+- **Which network card:** the router opens the port for one network card (see below). `hostd`
+  tells the tablet the addresses of the card with the preferred default route; to fix it to the
+  card the router opens, for example the cable: `huawai config internet_interface=enp3s0`
+  (`ip -br link` lists the cards and their MAC addresses).
 
 ### 2. Router
 
-- **IPv4 (public IPv4 address):** forward the TCP port (here 7110) to the laptop's fixed address.
+- **IPv4 (public IPv4 address):** forward the TCP port (7110, or 443 with the redirect) to the
+  laptop's fixed address.
 - **IPv6-only connection (DS-Lite):** there is nothing to forward; instead, open the port for the
   laptop in the router's IPv6 firewall. Depending on the router, this is called "IPv6 host
-  exposure", "IPv6 port opening" or similar: allow TCP port 7110 to the laptop.
+  exposure", "IPv6 port opening" or similar: allow TCP port 443 (with the redirect) or 7110 to the
+  laptop. TCP is enough; the router need not open UDP.
 
 ### 3. Tablet
 
-With the USB cable connected and Android running:
+Nothing to do by hand: at every connection `hostd` sends the tablet this laptop's current global
+IPv6 addresses (the card chosen above; not the temporary privacy addresses, at most four) and the
+port to call; the tablet keeps them in `/data/tabletd/internet.learned`. So after
+`internet_port` is set, connect the tablet once at home (Wi-Fi or cable, remote control open),
+and it knows where to call; a new address from the router reaches it the next time it is home.
+The tablet calls the kept addresses first, from the next start of the remote control on.
+
+By hand, for the first time without a connection, or for a DynDNS name or IPv4 address, with the
+USB cable connected (Android or the own system running):
 
 ```
-scripts/autostart.sh internet ADDRESS-OR-NAME PORT
+scripts/autostart.sh internet auto 443          # or 7110 without the redirect
 ```
 
-for example `scripts/autostart.sh internet laptop.example.net 7110` or
-`scripts/autostart.sh internet 2001:db8:1234:5678::50 7110`. `scripts/autostart.sh internet off`
-removes the entry. The address is stored on the tablet in `/data/tabletd/internet`.
+stores this laptop's current addresses in `/data/tabletd/internet`; names or addresses can also be
+given, up to four: `scripts/autostart.sh internet laptop.example.net 443` or
+`scripts/autostart.sh internet 2001:db8::50 2001:db8::51 443`. `internet off` removes these and the
+learned ones (set `internet_port=0` as well, or `hostd` sends them again). The tablet tries all
+addresses in turn, at most four: a call that fails moves on to the next one.
 
-- Prefer a stable address. If the laptop has several IPv6 addresses (SLAAC, temporary privacy
-  addresses, DHCPv6), choose one that does not change and check that it is reachable from outside.
-- If your provider changes the IPv6 prefix, the address has to be entered again. Alternatively use
-  a DynDNS name with an AAAA record that the laptop keeps up to date.
-- The tablet resolves the name when the own system starts, IPv6 first; IPv4 is used only when there
-  is no IPv6 address.
+- If the router gives the provider's new prefix while you are away, the kept addresses are out of
+  date until the tablet is home again; a DynDNS name with an AAAA record that the laptop keeps up
+  to date covers that case.
+- Keep the laptop on the network card the router opens (for example the cable) and awake (no
+  suspend while you are away).
+- The tablet resolves names when the own system starts, IPv6 first; IPv4 only when there is no IPv6.
+- Testing from inside the home network can be misleading: with Mullvad VPN connected, the laptop
+  did not answer neighbour solicitations that came from the tablet's public IPv6 address, so the
+  tablet could not reach the laptop's public address from inside. From outside, the router asks
+  instead (usually from its link-local address).
 
 ### Using it
 
+Choose the other network's Wi-Fi in Android *before* starting the own system: without Android,
+the tablet keeps the Wi-Fi settings (IPv4 address, gateway) of the network it was in when Android
+was paused; it does not ask the new network's router for a new IPv4 address.
+
 On the remote network: choose the Wi-Fi network in Android, then "Tablet System", then
 "Remote control".
+
+### If the laptop does not come
+
+While the remote control waits, the line above "Ready – waiting for the laptop" says how the last
+call home went:
+
+| Line on the tablet | Meaning |
+|---|---|
+| Home: calling ... | the call is under way |
+| Home: no IPv6 in this network | this network gives the tablet no IPv6; behind DS-Lite there is no other way home (try a mobile phone hotspot) |
+| Home: no answer | nothing answered within 5 s: laptop off or asleep, or the router's or laptop's firewall drops the call, or the stored address is out of date |
+| Home: laptop not reachable | the network or the router reports the address as unreachable (also seen at home with Mullvad VPN, see above) |
+| Home: refused - hostd running? | the laptop answered, but nothing listens on the port |
+| Home: blocked by a firewall | a firewall on the way rejects the call |
+| Home: the laptop hung up / handshake too slow | the connection stood, but the handshake did not finish |
+| Home: pairing key not accepted | the laptop holds a different key (`huawai pair` again over the cable) |
+
+Back home, the laptop shows what reached it: `journalctl --user -u huawai-hostd` (connections and
+refused callers) and `sudo nft list ruleset | grep -A8 huawai` (the counters of the redirect and of
+the Mullvad marks show whether the tablet's packets reached the laptop at all, that is, got through
+the router).
+
+If the tablet loses the network for a moment, it calls again; `hostd` gives up a connection from
+which nothing has come for 5 seconds, and a new call that proves the key replaces the old
+connection at once.
+
+A test without leaving home: let the tablet join a mobile phone's hotspot in Android (mobile data,
+not the home Wi-Fi), then "Tablet System", then "Remote control". That is the same way in as from
+anywhere else.
 
 ### Limits
 

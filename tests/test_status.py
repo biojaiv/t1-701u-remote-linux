@@ -7,8 +7,11 @@ tabletd's own calendar arithmetic.
 """
 import datetime
 import pathlib
+import os
 import re
+import socket
 import struct
+import threading
 import time
 import unittest
 
@@ -112,8 +115,9 @@ class Page:
         return rgba.astype(np.uint8).tobytes()
 
     @classmethod
-    def expected(cls, rotation, address, cap, charging, when=None):
-        """when: datetime as the tablet should show it, or None (no time yet)."""
+    def expected(cls, rotation, address, cap, charging, when=None, call=None):
+        """when: datetime as the tablet should show it, or None (no time yet).
+        call: the line about the call to the laptop at home, or None."""
         p = cls(rotation)
         m = 28
         p.gradient()
@@ -140,6 +144,8 @@ class Page:
                 else "Time comes from the laptop")
         p.text("clock", (p.cw - p.width("clock", clock)) // 2, p.ch // 2 + 40, TEXT_MAIN, clock)
         p.text("text", (p.cw - p.width("text", date)) // 2, p.ch // 2 + 100, TEXT_SUB, date)
+        if call:
+            p.text("text", (p.cw - p.width("text", call)) // 2, p.ch - 88, TEXT_DIM, call)
         state = " Ready – waiting for the laptop"
         x = (p.cw - p.width("text", "•") - p.width("text", state)) // 2
         x = p.text("text", x, p.ch - 48, AMBER, "•")
@@ -251,6 +257,73 @@ class NoWifi(StatusCase):
     def test_no_address(self):
         (self.battery / "capacity").write_text("35\n")
         self.wait_for_page(Page.expected("none", "", 35, True))
+
+
+class CallState(StatusCase):
+    """Away from home the waiting screen is the only place to see why the
+    laptop does not come: the reason of the last call is shown above
+    "Ready". The laptop side here: a closed port, one that hangs up at once,
+    one that never answers the handshake."""
+    answer = None      # None: nothing listens; "close": hang up; "silent": say nothing
+
+    def prepare(self):
+        super().prepare()
+        key = self.dir / "key"
+        key.write_bytes(os.urandom(32))
+        key.chmod(0o600)
+        self.server = socket.socket(socket.AF_INET6)
+        self.server.bind(("::1", 0))
+        self.target_port = self.server.getsockname()[1]
+        self.held = []
+        if self.answer is None:
+            self.server.close()              # nobody there: refused
+            return
+        self.server.listen(4)
+
+        def serve():
+            while True:
+                try:
+                    conn, _ = self.server.accept()
+                except OSError:
+                    return
+                if self.answer == "close":
+                    conn.close()
+                else:
+                    self.held.append(conn)    # open, but no handshake ever comes
+        threading.Thread(target=serve, daemon=True).start()
+
+    def tearDown(self):
+        self.server.close()
+        for conn in self.held:
+            conn.close()
+        super().tearDown()
+
+    def args(self):
+        return super().args() + ["--secure-connect", f"[::1]:{self.target_port}",
+                                 "--key", str(self.dir / "key")]
+
+
+class CallRefused(CallState):
+    def test_refused_is_shown(self):
+        self.wait_for_page(Page.expected("none", "127.0.0.1", 57, True,
+                                         call="Home: refused - hostd running?"))
+
+
+class CallHungUp(CallState):
+    answer = "close"
+
+    def test_hang_up_is_shown(self):
+        self.wait_for_page(Page.expected("none", "127.0.0.1", 57, True,
+                                         call="Home: the laptop hung up"))
+
+
+class CallSilent(CallState):
+    answer = "silent"
+    rotation = "counterclockwise"         # the long line in landscape, too
+
+    def test_silent_laptop_is_shown(self):
+        self.wait_for_page(Page.expected("counterclockwise", "127.0.0.1", 57, True,
+                                         call="Home: handshake too slow"), timeout=14)
 
 
 class RotationFile(StatusCase):

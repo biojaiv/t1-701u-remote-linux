@@ -37,7 +37,7 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 TABLETD = ROOT / "build" / "x86" / "tabletd"
 LZ4CLI = ROOT / "build" / "x86" / "lz4cli"
 W, H = 600, 1024
-TYPES = [0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08]
+TYPES = [0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x0A]
 LENGTHS = {0x02: 4, 0x03: 1, 0x04: 12, 0x05: 4, 0x06: 32, 0x07: 12}
 
 
@@ -59,6 +59,12 @@ def valid_message(rng):
         frames = rng.choice((1, 480, 960, 2400, 4800, 4801, rng.randint(1, 5000)))
         samples = rng.randbytes(frames * max(channels, 1) * 2 + rng.choice((0, 0, 0, 1)))
         return frame(0x08, struct.pack("<IBB", rate, channels, rng.choice((0, 0, 0, 1))) + samples)
+    if msg_type == 0x0A:              # ADDRESSES: mostly global IPv6, sometimes not
+        count = rng.choice((1, 2, 4, 1, 0, 5))
+        addrs = b"".join(bytes([rng.choice((0x20, 0x2a, 0x3f, 0xfd, 0xfe, 0x00))])
+                         + rng.randbytes(15) for _ in range(max(count, 1)))
+        return frame(0x0A, struct.pack("<HB", rng.choice((443, 7110, 0, 65535)),
+                                       rng.choice((count, count, count + 1))) + addrs)
     if msg_type != 0x01:
         return frame(msg_type, rng.randbytes(LENGTHS[msg_type]))
     w, h = rng.randint(1, 80), rng.randint(1, 80)
@@ -154,7 +160,7 @@ class Target:
              "--listen", f"abstract:{self.name}", "--input", str(self.touch),
              "--input", str(self.keys), "--status-page", "--idle-dim", "0",
              "--secure-listen", f"127.0.0.1:{self.secure_port}", "--key", str(key_file),
-             "--audio", str(self.player)])
+             "--audio", str(self.player), "--learn-file", str(self.tmp / "internet.learned")])
         self.proc = subprocess.Popen(self.argv, stderr=self.err)
         self.sock = None
 

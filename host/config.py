@@ -6,6 +6,7 @@ tablet is connected by USB (so a new address from the router is picked up).
 """
 import ipaddress
 import os
+import re
 import pathlib
 import tomllib
 
@@ -15,6 +16,8 @@ DEFAULTS = {
     "mode": "mirror",
     "cable_fallback": True,
     "internet_port": 0,               # 0: the tablet cannot call from outside
+    "internet_call_port": 0,          # the port the tablet calls; 0: internet_port
+    "internet_interface": "",         # network card the router opens; "": automatic
     "audio": True,                    # the laptop's sound also on the tablet
 }
 ROTATIONS = ("counterclockwise", "clockwise")
@@ -41,6 +44,17 @@ cable_fallback = {cable_fallback}
 # a port forwarding of the router to this laptop). 0: off. The connection is
 # encrypted and must prove the pairing key, like the Wi-Fi link.
 internet_port = {internet_port}
+
+# The port the tablet calls, if the router opens another one than
+# internet_port: 443 with the laptop's redirect (scripts/port443.nft), for
+# networks that let nothing else out. 0: the same as internet_port.
+internet_call_port = {internet_call_port}
+
+# The network card whose IPv6 addresses hostd sends the tablet at every
+# connection (the tablet calls them from another network): the one the
+# router opens to the internet, for example "eth0" or "enp3s0". Empty: the one with
+# the preferred default route.
+internet_interface = "{internet_interface}"
 
 # Play the laptop's sound on the tablet too (the laptop keeps playing it).
 # About 190 KB/s over Wi-Fi and cable, 48 KB/s (24 kHz mono) over the internet.
@@ -83,6 +97,16 @@ def validate(values):
         raise ConfigError("internet_port must be a number from 0 to 65535")
     if port and port < 1024:
         raise ConfigError("internet_port: use a port of 1024 or above")
+    call = values["internet_call_port"]
+    if isinstance(call, str) and call.isdigit():
+        call = values["internet_call_port"] = int(call)
+    if (not isinstance(call, int) or isinstance(call, bool) or
+            not (call in (0, 443) or 1024 <= call <= 65535)):
+        raise ConfigError("internet_call_port must be 0, 443 or from 1024 to 65535")
+    interface = values["internet_interface"]
+    if not isinstance(interface, str) or (interface and
+                                          not re.match(r"^[A-Za-z0-9_.:@-]{1,15}$", interface)):
+        raise ConfigError("internet_interface: not a network card name")
     return values
 
 
@@ -113,6 +137,8 @@ def save(values, file=None):
                            mode=values["mode"],
                            cable_fallback="true" if values["cable_fallback"] else "false",
                            internet_port=values["internet_port"],
+                           internet_call_port=values["internet_call_port"],
+                           internet_interface=values["internet_interface"],
                            audio="true" if values["audio"] else "false")
     tmp = file.with_suffix(".tmp")
     tmp.write_text(text)
