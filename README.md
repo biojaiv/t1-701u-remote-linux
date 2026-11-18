@@ -37,8 +37,9 @@ second screen for a Linux laptop, with its own start screen and an optional full
   "Remote control", "Linux", "Android".
 - **Linux on the tablet** (optional): Devuan 6 "excalibur" (armhf) in a chroot with X11 on the
   framebuffer, a touch-friendly launcher, on-screen keyboard, files, editor, browser, images,
-  music & video, PDF, camera (experimental), settings and a **USB installer** that turns the
-  tablet into a USB stick with an ISO image for installing another computer.
+  music & video, PDF, camera (experimental), settings, a **transfer drive** for files between the
+  tablet and a computer, and a **USB installer** that turns the tablet into a USB stick with an
+  ISO image for installing another computer.
 - **Starts from Android with one tap** on a "Tablet System" icon, or automatically at boot.
 - **Wi-Fi from QR codes:** an optional installer for ZXing Barcode Scanner, which joins public Wi-Fi
   networks from their QR codes (downloaded from the official release and checked, not shipped).

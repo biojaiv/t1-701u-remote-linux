@@ -21,7 +21,8 @@ import tabletui as ui  # noqa: E402
 from gi.repository import Gio, GLib, Gtk  # noqa: E402
 
 # programs shown first, by executable, with short German names
-PREFERRED = [("tablet-usb-installer", "USB installer"), ("tablet-settings", "Settings"),
+PREFERRED = [("tablet-transfer", "Transfer"), ("tablet-usb-installer", "USB installer"),
+             ("tablet-settings", "Settings"),
              ("lxterminal", "Terminal"), ("pcmanfm", "Files"), ("mousepad", "Editor"),
              ("netsurf-gtk", "Browser"), ("netsurf", "Browser"), ("ristretto", "Images"),
              ("parole", "Music & video"), ("atril", "PDF"), ("guvcview", "Camera")]

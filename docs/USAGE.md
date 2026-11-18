@@ -46,6 +46,12 @@ behind the picture.
 - With `huawai up` (cable path) the sound card is opened for the shell user until the next reboot;
   if that fails, everything works without sound.
 
+## Files between tablet and computer
+
+In the Linux system, the app **Transfer** gives a drive to the computer over the USB cable; it shows
+up there as a USB drive named `TABLET`. Eject it on the computer and it is the tablet's folder
+`~/Transfer` again. Details in [LINUX.md](LINUX.md#transfer-drive).
+
 ## Joining Wi-Fi from a QR code
 
 Many cafés, hotels and stations show a QR code for their Wi-Fi. Install a scanner once (cable,

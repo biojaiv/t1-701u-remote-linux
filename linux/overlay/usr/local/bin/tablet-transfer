@@ -1,0 +1,130 @@
+#!/usr/bin/python3
+"""Transfer: a drive to move files between the tablet and a computer.
+
+The drive (a FAT image, see "scripts/linux.sh transfer create") is either the
+tablet's, as the folder ~/Transfer, or the computer's, as a USB drive named
+TABLET; never both at once, because a FAT file system must not be written
+from two sides. "Give to computer" asks tb-sysd (root) to unmount the folder
+and offer the drive over USB. When the computer ejects it, it comes back to
+the tablet by itself; "Take back" does the same from here.
+"""
+import os
+import shutil
+import subprocess
+import sys
+
+sys.path.insert(0, "/usr/local/lib/tablet")
+import tabletui as ui  # noqa: E402
+from gi.repository import GLib, Gtk  # noqa: E402
+
+FOLDER = os.path.expanduser("~/Transfer")
+TEXTS = {
+    "tablet": "The drive is on the tablet: the folder Transfer (in Files).",
+    "computer": "The drive is with the computer: it shows up there as a USB drive named TABLET. "
+                "Eject it on the computer when you are done; it then comes back here by itself.",
+    "computer-ejected": "The computer has ejected the drive; it is coming back …",
+    "none": "No transfer drive yet: \"Create drive\" makes one of 512 MB.",
+}
+
+
+class Transfer:
+    def __init__(self):
+        self.window = ui.full_screen_window("Transfer")
+        self.busy = False
+        outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=14, margin=28)
+        self.window.add(outer)
+        outer.pack_start(ui.label("Transfer", "title", xalign=0), False, False, 0)
+        outer.pack_start(ui.label("Move files between the tablet and a computer over the USB "
+                                  "cable", "sub", xalign=0), False, False, 0)
+
+        card = ui.styled(Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8), "card")
+        self.state = ui.label("", "sub", xalign=0, wrap=True)
+        self.space = ui.label("", "dim", xalign=0)
+        card.pack_start(self.state, False, False, 0)
+        card.pack_start(self.space, False, False, 0)
+        outer.pack_start(card, False, False, 4)
+
+        actions = Gtk.Box(spacing=12)
+        self.give = ui.styled(Gtk.Button(label="Give to computer"), "big", "accent")
+        self.take = ui.styled(Gtk.Button(label="Take back"), "big")
+        self.create = ui.styled(Gtk.Button(label="Create drive"), "big")
+        self.open = ui.styled(Gtk.Button(label="Open folder"), "big")
+        self.open.connect("clicked", self.open_folder)
+        self.give.connect("clicked", self.request, "give")
+        self.take.connect("clicked", self.request, "take")
+        self.create.connect("clicked", self.request, "create", "512")
+        actions.pack_start(self.give, False, False, 0)
+        actions.pack_start(self.take, False, False, 0)
+        actions.pack_start(self.create, False, False, 0)
+        actions.pack_start(self.open, False, False, 0)
+        outer.pack_start(actions, False, False, 0)
+
+        self.error = ui.label("", "sub", xalign=0, wrap=True)
+        outer.pack_start(self.error, False, False, 0)
+        outer.pack_end(ui.label("Close programs that have files from Transfer open before "
+                                "giving the drive to the computer.", "hint", xalign=0, wrap=True),
+                       False, False, 0)
+        self.refresh()
+        GLib.timeout_add_seconds(2, self.refresh)
+
+    def show_state(self, state):
+        self.state.set_text(TEXTS.get(state, f"Unknown state: {state}"))
+        self.give.set_sensitive(not self.busy and state == "tablet")
+        self.take.set_sensitive(not self.busy and state in ("computer", "computer-ejected"))
+        self.create.set_visible(state == "none")
+        self.open.set_visible(state == "tablet")
+        self.create.set_sensitive(not self.busy)
+        if state == "tablet":
+            try:
+                usage = shutil.disk_usage(FOLDER)
+                self.space.set_text(f"{ui.human_size(usage.free)} free of "
+                                    f"{ui.human_size(usage.total)}")
+            except OSError:
+                self.space.set_text("")
+        else:
+            self.space.set_text("")
+
+    def refresh(self):
+        if not self.busy:
+            reply = ui.sysd("transfer", "status")
+            if reply.startswith("transfer "):
+                self.show_state(reply.split(maxsplit=1)[1])
+            else:
+                self.state.set_text(f"Error: {reply.removeprefix('error ')}")
+        return True                     # keep polling: an eject on the computer shows up
+
+    def open_folder(self, _button):
+        """The folder in the file manager (it opens on top, one program at a time)."""
+        try:
+            subprocess.Popen(["pcmanfm", FOLDER], start_new_session=True)
+        except OSError as error:
+            self.error.set_text(f"Error: {error.strerror or error}")
+
+    def request(self, _button, *what):
+        self.busy = True
+        self.error.set_text("")
+        self.state.set_text("One moment …")
+        self.give.set_sensitive(False)
+        self.take.set_sensitive(False)
+        self.create.set_sensitive(False)
+
+        def work():
+            reply = ui.sysd("transfer", *what)
+            self.busy = False
+            if reply.startswith("error"):
+                self.error.set_text(f"Error: {reply.removeprefix('error ')}")
+            self.refresh()
+            return False
+        GLib.timeout_add(100, work)     # let the "moment" text appear first
+
+
+def main():
+    ui.apply_style()
+    app = Transfer()
+    app.window.connect("destroy", Gtk.main_quit)
+    app.window.show_all()
+    Gtk.main()
+
+
+if __name__ == "__main__":
+    main()

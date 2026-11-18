@@ -61,6 +61,14 @@ from Android's settings.
 
 In addition: onboard 1.4.1 fails under Python 3.13 when inserting characters
 (`SystemError … bad format char`); `tablet-onboard` replaces the one faulty conversion.
+The keyboard docks at the bottom over the program instead of shrinking it, and does not move
+windows: with matchbox, resizing the full-screen program on every show and hide fed focus changes
+back to onboard's auto-show, and hiding the keyboard made it blink instead of going away. A text
+field at the very bottom of a window can therefore be covered by it.
+
+The file manager (PCManFM) opens files and folders with a single tap (a double tap is rarely
+recognised on the touch screen); the session sets this at every start, together with a
+"Transfer" bookmark in its side pane.
 
 ## Building and setting up
 
@@ -96,6 +104,30 @@ image, "Share", plug the cable into the other computer and choose the tablet in 
 "Stop" switches back. From the laptop: `scripts/linux.sh usb on NAME [disk|cd]`, `usb off`,
 `usb status`. Tested: Kali 2026.3 netinstall as a removable drive, all files identical. Not yet
 tested: booting a computer from it. Space: about 1.9 GB are free on `/data`.
+
+## Transfer drive
+
+To move files between the tablet and a computer over the USB cable. The drive is a FAT32 image on
+the tablet (`/data/tabletd/transfer.img`, label `TABLET`) and belongs to one side at a time, because
+a FAT file system must not be written from two sides:
+
+- **On the tablet** it is the folder `~/Transfer` (in Files).
+- **"Give to computer"** in the app **Transfer** (tile on the Linux start screen) unmounts the folder
+  and offers the drive over USB, writable; the computer shows a USB drive named `TABLET` (Dolphin:
+  "Devices"). Programs that have files from `Transfer` open must be closed first.
+- **Eject it on the computer** when done (Dolphin: "Safely remove"); it then comes back to the tablet
+  by itself. That also happens when the cable is pulled out, but then, as with a USB stick, files
+  the computer had not written out yet are missing. "Take back" in the app does the same from the
+  tablet; it refuses while the computer still uses the drive.
+- Next to `TABLET` the computer may list an empty drive of 0 bytes: a second, unused slot of the
+  tablet's USB gadget. It can be ignored.
+
+Create it once: "Create drive" in the app (512 MB), or `scripts/linux.sh transfer create [MB]` from
+the laptop (64 to 1024 MB; 256 MB of `/data` always stay free). It is made on the tablet with
+Android's `newfs_msdos`. From the laptop: `scripts/linux.sh transfer give | take [force] | status`.
+`take force` takes it back without the computer's eject: files the computer has not written out
+yet are lost, as with a USB stick pulled out too early. The drive and the USB installer use the same
+USB slot: only one of them at a time.
 
 ## Maintenance
 

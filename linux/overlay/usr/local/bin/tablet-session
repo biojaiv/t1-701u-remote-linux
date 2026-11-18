@@ -26,6 +26,21 @@ chmod 700 "$XDG_RUNTIME_DIR"
 NEXT="$XDG_RUNTIME_DIR/next"
 rm -f "$NEXT"
 
+# file manager for fingers: open with one tap (a double tap is rarely
+# recognised; pcmanfm had saved single_click=0), and the transfer drive's
+# folder in the side pane
+fm=$HOME/.config/libfm/libfm.conf
+mkdir -p "${fm%/*}" "$HOME/.config/gtk-3.0"
+if [ ! -f "$fm" ]; then
+    printf '[config]\nsingle_click=1\n' > "$fm"
+elif grep -q '^single_click=' "$fm"; then
+    sed -i 's/^single_click=.*/single_click=1/' "$fm"
+else
+    sed -i '/^\[config\]/a single_click=1' "$fm"
+fi
+grep -qs "file://$HOME/Transfer " "$HOME/.config/gtk-3.0/bookmarks" ||
+    echo "file://$HOME/Transfer Transfer" >> "$HOME/.config/gtk-3.0/bookmarks"
+
 rm -f "$XAUTHORITY"
 umask 077
 xauth -q add :0 . "$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')"

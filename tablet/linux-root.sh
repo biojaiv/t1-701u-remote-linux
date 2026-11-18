@@ -22,6 +22,9 @@ LOG=/data/tabletd/log
 # installation images: the shell user writes them (tb-fetch), the session
 # user's group reads them, tb-sysd offers them over USB
 ISO=/data/tabletd/iso
+# the transfer drive (FAT image): the session's ~/Transfer, or a USB drive for
+# the computer (scripts/linux.sh transfer, tb-sysd)
+TRANSFER=/data/tabletd/transfer.img
 DAEMON_LOG=$LOG/linuxd.log
 SYSD_LOG=$LOG/sysd.log
 SESSION_LOG=$LOG/session.log
@@ -32,12 +35,23 @@ mounted() { grep -q " $1 " /proc/mounts; }
 in_system() { "$D/tb-chroot" "$R" "$@"; }
 
 pid_from_log() {  # pid_from_log LOGFILE PROGRAM: pid if that program still runs
-    [ -f "$1" ] || return 0
     w1= w2= pid=
-    read -r w1 w2 pid rest < "$1"
-    [ "$w1 $w2" = "$2 pid" ] || return 0
+    [ -f "$1" ] && read -r w1 w2 pid rest < "$1"
+    if [ "$w1 $w2" != "$2 pid" ]; then
+        # no pid in the log (emptied, or lost): look among the processes, so
+        # a running daemon is never started a second time
+        for exe in /proc/[0-9]*/exe; do
+            case "$(readlink "$exe" 2>/dev/null)" in
+                "$D/$2"|"$D/$2 (deleted)") exe=${exe#/proc/}; echo "${exe%/exe}"; return 0 ;;
+            esac
+        done
+        return 0
+    fi
+    # "(deleted)": the program file was replaced (scripts/linux.sh tools) while
+    # it ran; it still runs. Missing that started a second tb-linuxd, which
+    # emptied the running session's logs first (2026-11-18)
     case "$(readlink /proc/$pid/exe 2>/dev/null)" in
-        "$D/$2") echo "$pid" ;;
+        "$D/$2"|"$D/$2 (deleted)") echo "$pid" ;;
     esac
 }
 
@@ -91,6 +105,8 @@ do_umount() {
     do_stop
     if mounted "$R"; then
         mounted "$R/media/iso" && umount "$R/media/iso"
+        # normally tb-sysd unmounted it when it was stopped
+        mounted "$R/home/tablet/Transfer" && umount "$R/home/tablet/Transfer"
         [ -x "$R/usr/local/lib/tablet/mounts.sh" ] && in_system /usr/local/lib/tablet/mounts.sh down
         umount "$R" || { echo "linux-root: $R is busy" >&2; exit 1; }
     fi
@@ -141,7 +157,8 @@ start_sysd() {
     : > "$SYSD_LOG"
     chown 0:2000 "$SYSD_LOG"
     chmod 640 "$SYSD_LOG"
-    "$D/tb-sysd" --dir "$ISO" --daemon "$SYSD_LOG" || return 1
+    "$D/tb-sysd" --dir "$ISO" --transfer "$TRANSFER" --transfer-mount "$R/home/tablet/Transfer" \
+        --daemon "$SYSD_LOG" || return 1
     i=0
     until [ -n "$(sysd_pid)" ]; do
         i=$((i + 1))

@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=Transfer
+Comment=Move files between the tablet and a computer over the USB cable
+Exec=tablet-transfer
+Icon=drive-removable-media-usb
+Categories=Utility;

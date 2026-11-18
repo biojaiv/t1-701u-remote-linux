@@ -1,7 +1,7 @@
 #!/bin/sh
 # The Linux system on the tablet (Devuan 6 in a chroot on Huawei's kernel),
-# operated from the laptop. Needs the USB cable. Everything that needs root
-# needs Android running, because KingRoot's su does not work without it.
+# operated from the laptop. Needs the USB cable. Root comes from KingRoot's su
+# while Android runs, from tb-su while the own system runs.
 #
 #   scripts/linux.sh install          everything below in order: tools, image, overlay,
 #                                     mount, stage2, base, packages (long; can be repeated)
@@ -21,6 +21,11 @@
 #                                     because adb push breaks off above 2 GiB)
 #   scripts/linux.sh iso-list | iso-delete NAME
 #   scripts/linux.sh usb on NAME [disk|cd] | usb off | usb status
+#
+# Transfer drive (a FAT image, the session's ~/Transfer or a USB drive for this
+# laptop; one side at a time):
+#   scripts/linux.sh transfer create [MB]   create it once on the tablet (default 512 MB)
+#   scripts/linux.sh transfer give | take [force] | status
 set -eu
 
 cd "$(dirname "$0")/.."
@@ -39,16 +44,26 @@ need_device() {
     [ "$(adb get-state 2>/dev/null | tr -d '\r')" = "device" ] || fail "tablet not reachable over USB"
 }
 
-# root on the tablet through KingRoot's su (Android must run); no single quotes in $*
+# root on the tablet: KingRoot's su while Android runs, tb-su (tb-rootd, started
+# by the own system) while it is stopped; no single quotes in $*
+ROOT_VIA=""
 root() {
-    adb shell "su -c '$*'" | tr -d '\r'
+    if [ -z "$ROOT_VIA" ]; then
+        ROOT_VIA=su
+        [ "$(adb shell getprop init.svc.zygote | tr -d '\r')" = running ] || ROOT_VIA=tb-su
+    fi
+    if [ "$ROOT_VIA" = tb-su ]; then
+        adb shell "$T/tb-su -c '$*'" | tr -d '\r'
+    else
+        adb shell "su -c '$*'" | tr -d '\r'
+    fi
 }
 
 need_root() {
     need_device
     case "$(root id)" in
         *uid=0*) ;;
-        *) fail "su does not give root (is Android running? 'huawai down' starts it)" ;;
+        *) fail "no root on the tablet (Android running: su; own system: tb-su)" ;;
     esac
 }
 
@@ -246,6 +261,29 @@ cmd_usb() {
     esac
 }
 
+cmd_transfer() {
+    need_device
+    case "${1:-}" in
+        create)
+            # tb-sysd makes it on the tablet with Android's newfs_msdos (no root
+            # needed here, works with Android stopped too)
+            adb shell "$T/tb-sysd ask transfer create ${2:-512}" | tr -d '\r' ;;
+        give)
+            # USB re-connects while switching; the answer may get lost, status tells
+            adb shell "$T/tb-sysd ask transfer give" 2>/dev/null | tr -d '\r' || true
+            sleep 4
+            adb wait-for-device
+            adb shell "$T/tb-sysd ask transfer status" | tr -d '\r' ;;
+        take)
+            adb shell "$T/tb-sysd ask transfer take ${2:-}" 2>/dev/null | tr -d '\r' || true
+            sleep 4
+            adb wait-for-device
+            adb shell "$T/tb-sysd ask transfer status" | tr -d '\r' ;;
+        status) adb shell "$T/tb-sysd ask transfer status" | tr -d '\r' ;;
+        *) fail "usage: transfer create [MB] | give | take [force] | status" ;;
+    esac
+}
+
 cmd_install() {
     cmd_tools
     cmd_image
@@ -276,5 +314,6 @@ case "${1:-}" in
     iso-delete) need_device; valid_image_name "${2:?name}" || fail "invalid name"
                 adb shell "rm $ISO/$2" | tr -d '\r' ;;
     usb) shift; cmd_usb "$@" ;;
+    transfer) shift; cmd_transfer "$@" ;;
     *) sed -n '2,/^set -eu/p' "$0" | sed '$d; s/^# \{0,1\}//'; exit 2 ;;
 esac
