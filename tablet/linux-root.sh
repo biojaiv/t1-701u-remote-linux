@@ -27,6 +27,7 @@ ISO=/data/tabletd/iso
 TRANSFER=/data/tabletd/transfer.img
 DAEMON_LOG=$LOG/linuxd.log
 SYSD_LOG=$LOG/sysd.log
+CAMERA_LOG=$LOG/camera.log
 SESSION_LOG=$LOG/session.log
 SESSION_UID=5000
 
@@ -57,6 +58,7 @@ pid_from_log() {  # pid_from_log LOGFILE PROGRAM: pid if that program still runs
 
 daemon_pid() { pid_from_log "$DAEMON_LOG" tb-linuxd; }
 sysd_pid() { pid_from_log "$SYSD_LOG" tb-sysd; }
+camera_pid() { pid_from_log "$CAMERA_LOG" tb-camera; }
 
 session_processes() {   # number of processes of the session user
     n=0
@@ -115,6 +117,7 @@ do_umount() {
 
 do_daemon() {
     start_sysd
+    start_camera
     if [ -n "$(daemon_pid)" ]; then
         echo "linux-root: tb-linuxd runs (pid $(daemon_pid))"
         return 0
@@ -168,7 +171,25 @@ start_sysd() {
     echo "linux-root: tb-sysd runs (pid $(sysd_pid))"
 }
 
+# tb-camera: the cameras for the session (Android's camera driver, see
+# tablet/camera/camera.c); only if it was installed (built with the NDK)
+start_camera() {
+    [ -x "$D/tb-camera" ] || return 0
+    [ -n "$(camera_pid)" ] && return 0
+    "$D/tb-camera" --daemon "$CAMERA_LOG" || return 0
+    chown 0:2000 "$CAMERA_LOG" 2>/dev/null
+    i=0
+    until [ -n "$(camera_pid)" ]; do
+        i=$((i + 1))
+        [ "$i" -gt 25 ] && { echo "linux-root: tb-camera did not start" >&2; return 0; }
+        sleep 0.2
+    done
+    echo "linux-root: tb-camera runs (pid $(camera_pid))"
+}
+
 do_stop() {
+    cpid=$(camera_pid)
+    [ -n "$cpid" ] && kill "$cpid" && echo "linux-root: tb-camera stopped"
     pid=$(daemon_pid)
     [ -n "$pid" ] && kill "$pid"
     kill_session_user

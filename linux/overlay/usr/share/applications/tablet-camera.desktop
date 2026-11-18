@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=Camera
+Comment=Preview and photos with the tablet's front and back camera
+Exec=tablet-camera
+Icon=camera-photo
+Categories=Graphics;Photography;

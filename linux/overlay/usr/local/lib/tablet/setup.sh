@@ -53,10 +53,11 @@ packages() {
         matchbox-window-manager matchbox-desktop onboard at-spi2-core gir1.2-atspi-2.0
     # programs
     apt-get install -y lxterminal pcmanfm mousepad netsurf-gtk
-    # pictures, music and video (GStreamer, no GPU: small videos only), PDF,
-    # camera attempt (guvcview, v4l-utils) and sound tools for testing
+    # pictures, music and video (GStreamer, no GPU: small videos only), PDF and
+    # sound tools for testing; the camera is tablet-camera (Android's camera
+    # driver through tb-camera), /dev/video0 alone shows nothing
     apt-get install -y ristretto parole gstreamer1.0-plugins-good gstreamer1.0-alsa \
-        gstreamer1.0-libav atril guvcview v4l-utils alsa-utils
+        gstreamer1.0-libav atril alsa-utils
     apt-get clean
     echo "packages: done"
 }

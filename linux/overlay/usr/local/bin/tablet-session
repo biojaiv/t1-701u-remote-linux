@@ -11,6 +11,9 @@ set -u
 
 ROTATION=${ROTATION:-counterclockwise}
 case "$ROTATION" in counterclockwise|clockwise|none) ;; *) ROTATION=counterclockwise ;; esac
+export ROTATION                 # tablet-camera turns its picture by it
+# GTK file dialogs: one tap opens a folder or picks a file (tablet/gtktouch.c)
+export GTK_MODULES=/usr/local/lib/tablet/libtablet-gtktouch.so
 
 export DISPLAY=:0
 export XAUTHORITY="$HOME/.Xauthority"
@@ -74,6 +77,7 @@ export DBUS_SESSION_BUS_ADDRESS
 matchbox-window-manager -theme Tablet -use_titlebar yes -use_cursor no &
 TABLET_XPID=$xpid TABLET_NEXT=$NEXT tablet-launcher &
 tablet-onboard &
+tablet-keyboard-tab &       # the "ABC" tab at the right edge opens/closes it
 
 wait "$xpid"
 echo "tablet-session: X ended"

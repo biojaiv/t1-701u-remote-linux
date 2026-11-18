@@ -25,10 +25,11 @@ PREFERRED = [("tablet-transfer", "Transfer"), ("tablet-usb-installer", "USB inst
              ("tablet-settings", "Settings"),
              ("lxterminal", "Terminal"), ("pcmanfm", "Files"), ("mousepad", "Editor"),
              ("netsurf-gtk", "Browser"), ("netsurf", "Browser"), ("ristretto", "Images"),
-             ("parole", "Music & video"), ("atril", "PDF"), ("guvcview", "Camera")]
+             ("parole", "Music & video"), ("atril", "PDF"), ("tablet-camera", "Camera")]
 # helpers that make no sense as tiles here
 HIDDEN = {"onboard", "onboard-settings", "matchbox-desktop", "tablet-launcher", "xdg-open",
-          "lxterminal-root", "pcmanfm-desktop-pref", "tablet-onboard"}
+          "lxterminal-root", "pcmanfm-desktop-pref", "tablet-onboard", "tablet-keyboard-tab",
+          "guvcview"}       # cannot show this tablet's cameras (tablet-camera can)
 DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
 MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August",
           "September", "October", "November", "December"]

@@ -7,8 +7,9 @@ security updates. It runs in a chroot on Huawei's kernel 3.10.17, because as far
 signed boot chain does not accept a custom kernel. User interface: X11 directly on the framebuffer,
 the matchbox window manager (one program in full screen), its own start screen `tablet-launcher` in
 the style of tb-home (clock, date, Wi-Fi, battery, large tiles), the onboard on-screen keyboard,
-which appears at the bottom by itself when a text field is focused, and a dark GTK theme. Programs
-installed initially: LXTerminal, PCManFM, Mousepad, NetSurf; more can be added with apt.
+opened and closed with the **"ABC" tab** at the right edge, and a dark GTK theme. Programs installed
+initially: LXTerminal, PCManFM, Mousepad, NetSurf, Ristretto, Parole, Atril, plus the project's own
+Transfer, Camera and Settings; more can be added with apt.
 
 On the start screen (tb-home) it appears as the **"Linux"** tile next to the remote control. Back
 to the start screen: hold both volume keys, as in the remote control. In the Linux start screen the
@@ -61,14 +62,20 @@ from Android's settings.
 
 In addition: onboard 1.4.1 fails under Python 3.13 when inserting characters
 (`SystemError … bad format char`); `tablet-onboard` replaces the one faulty conversion.
-The keyboard docks at the bottom over the program instead of shrinking it, and does not move
-windows: with matchbox, resizing the full-screen program on every show and hide fed focus changes
-back to onboard's auto-show, and hiding the keyboard made it blink instead of going away. A text
-field at the very bottom of a window can therefore be covered by it.
 
-The file manager (PCManFM) opens files and folders with a single tap (a double tap is rarely
-recognised on the touch screen); the session sets this at every start, together with a
-"Transfer" bookmark in its side pane.
+**Keyboard:** the "ABC" tab at the right edge (`tablet-keyboard-tab`) opens onboard and closes it
+again; it is blue while the keyboard is open. The tab never takes the input focus, so the text field
+that was tapped keeps it. onboard's own automatic showing and its docking are off: with matchbox,
+the docked keyboard mapped and unmapped its window about six times a second after it was closed
+(recorded with `xev`; seen as fast blinking), while a floating keyboard at the same place (the
+bottom 205 pixels, full width) maps and unmaps exactly once. The keyboard lies over the program, so
+a text field at the very bottom of a window can be covered by it.
+
+**One tap:** the file manager (PCManFM) opens files and folders with a single tap (a double tap is
+rarely recognised on the touch screen); the session sets this at every start, together with a
+"Transfer" bookmark in its side pane. GTK's own file dialogs (Open, Save) have no such setting; a
+small GTK module (`tablet/gtktouch.c`, `libtablet-gtktouch.so`, loaded through `GTK_MODULES`) sets
+their file lists to open with one tap.
 
 ## Building and setting up
 
@@ -129,6 +136,25 @@ Android's `newfs_msdos`. From the laptop: `scripts/linux.sh transfer give | take
 yet are lost, as with a USB stick pulled out too early. The drive and the USB installer use the same
 USB slot: only one of them at a time.
 
+## Camera
+
+The sensors of both cameras are run by Android's camera driver (`camera.sc8830.so`); the sensor
+drivers live there, not in the kernel, so Linux camera programs see no usable camera on
+`/dev/video0`. `tb-camera` (`tablet/camera/camera.c`) loads that driver itself, as Android's media
+server does, but without Android's camera service. It runs outside the Linux system as the media
+user, is started with it (`linux-root.sh daemon`), restarts its camera process if the driver
+crashes, and serves one program at a time over the abstract socket `tabletd-camera` (only the session
+user, root and the shell user). The app **Camera** (`tablet-camera`) shows the preview (about 3 to 8
+pictures per second), takes photos (JPEG, 1600×1200, from the driver), switches between front and
+back, turns the picture by 90° per tap (remembered per camera), and saves to `~/Pictures` or a folder
+chosen in the app with one tap per folder. The front camera's preview is mirrored; its photos are not.
+
+Building it needs the Android NDK r25c (the last one for Android 4.4): `make android` (or
+`NDK=/path make android`); `scripts/linux.sh tools` builds and installs it when the NDK is there,
+otherwise the Linux system has no camera. The driver's interface comes from the AOSP 4.4.2 headers in
+`third_party/aosp-4.4.2-headers/`. `tablet/camera/probe.c` and `camtest.c` are small test programs
+for the driver (list the cameras; count preview frames), not installed.
+
 ## Maintenance
 
 | Command | Effect |
@@ -165,6 +191,7 @@ directory of the user `tablet`: `~tablet/.local/share/xorg/Xorg.0.log`.
 - **When stopping**, the service sometimes reports "processes left after SIGKILL": a process takes
   longer than 3 s; afterwards it is gone (checked). Cause not investigated.
 - **Tested on the device:** picture the right way round in landscape, touch at the right position,
-  start screen with tiles, keyboard appears by itself, non-ASCII characters (umlauts) arrive, speed
-  "usable", back with both volume keys, switching to the remote control and starting again.
+  start screen with tiles, keyboard with the "ABC" tab without blinking, one tap in file dialogs,
+  non-ASCII characters (umlauts) arrive, speed "usable", back with both volume keys, switching to the
+  remote control and starting again, both cameras with preview, switching and photos.
   **Not yet tested:** sound, NetSurf with real web pages, continuous operation.

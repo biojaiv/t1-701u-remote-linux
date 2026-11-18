@@ -1,0 +1,399 @@
+#!/usr/bin/python3
+"""Camera: preview and photos with the tablet's two cameras.
+
+The sensors are run by Android's camera driver; tb-camera (outside the Linux
+system, started with it) talks to that driver and sends preview frames as
+RGB over the abstract socket "tabletd-camera". Photos are the driver's JPEG
+files (up to 1600x1200) and are saved to ~/Pictures, or to the folder chosen
+with "Folder" (remembered). The folder list is the app's own: one tap opens a
+folder (GTK's file dialog needs double taps). The front camera's preview is
+mirrored, like a mirror; its photos are not.
+
+Turning: the sensors are built in turned (back 90, front 270 degrees). The
+first guess comes from that and from the session's screen rotation; "↻"
+turns by 90 degrees and is remembered per camera.
+"""
+import json
+import os
+import socket
+import struct
+import sys
+import time
+
+sys.path.insert(0, "/usr/local/lib/tablet")
+import tabletui as ui  # noqa: E402
+from gi.repository import GdkPixbuf, GLib, Gtk  # noqa: E402
+
+SOCKET = "\0tabletd-camera"
+HOME = os.path.expanduser("~")
+PICTURES = os.path.join(HOME, "Pictures")
+TRANSFER = os.path.join(HOME, "Transfer")
+SETTINGS = os.path.expanduser("~/.config/tablet-camera.json")
+FRAME, PHOTO, ERROR, INFO = 1, 2, 3, 4
+# how far the user has turned the tablet from portrait, clockwise, for the
+# session's screen rotation (tablet-session, ROTATION)
+DEVICE_TURN = {"counterclockwise": 90, "clockwise": 270, "none": 0}
+
+
+def load_settings():
+    try:
+        with open(SETTINGS) as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return {}
+
+
+def save_settings(settings):
+    try:
+        os.makedirs(os.path.dirname(SETTINGS), exist_ok=True)
+        with open(SETTINGS, "w") as f:
+            json.dump(settings, f)
+    except OSError:
+        pass
+
+
+class Camera:
+    def __init__(self):
+        self.window = ui.full_screen_window("Camera")
+        self.sock = None
+        self.buf = b""
+        self.cameras = []                 # [(facing, orientation)]
+        self.current = 0
+        self.settings = load_settings()
+        self.started_at = 0.0
+        self.frames = 0
+        self.photo_timer = None
+
+        self.pages = Gtk.Stack()
+        self.window.add(self.pages)
+        outer = Gtk.Box(spacing=16, margin=16)
+        self.pages.add_named(outer, "camera")
+        self.pages.add_named(self.folder_page(), "folders")
+        self.image = Gtk.Image()
+        self.image.set_size_request(640, 480)
+        outer.pack_start(self.image, True, True, 0)
+
+        side = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=14)
+        self.shutter = ui.styled(Gtk.Button(label="Photo"), "big", "accent")
+        self.switch = ui.styled(Gtk.Button(label="Front / back"), "big")
+        self.turn = ui.styled(Gtk.Button(label="↻ Turn"), "big")
+        self.folder_button = ui.styled(Gtk.Button(label="Folder …"), "big")
+        self.shutter.connect("clicked", self.take_photo)
+        self.switch.connect("clicked", self.switch_camera)
+        self.turn.connect("clicked", self.turn_more)
+        self.folder_button.connect("clicked", self.choose_folder)
+        for button in (self.shutter, self.switch, self.turn, self.folder_button):
+            side.pack_start(button, False, False, 0)
+        self.where = ui.label("", "dim", xalign=0, wrap=True)
+        self.where.set_max_width_chars(22)
+        side.pack_start(self.where, False, False, 0)
+        self.state = ui.label("Starting the camera …", "sub", xalign=0, wrap=True)
+        self.state.set_max_width_chars(22)
+        side.pack_end(self.state, False, False, 0)
+        outer.pack_start(side, False, False, 0)
+        self.window.connect("destroy", self.close)
+        self.show_where()
+        self.set_buttons(False)
+        GLib.idle_add(self.connect)
+
+    # -- connection -----------------------------------------------------------
+
+    def set_buttons(self, on):
+        for button in (self.shutter, self.turn):
+            button.set_sensitive(on)
+        self.switch.set_sensitive(on and len(self.cameras) > 1)
+
+    def connect(self):
+        """Connect; while the service is not there, try again every 2 s."""
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        try:
+            sock.connect(SOCKET)
+            sock.setblocking(False)
+        except OSError as error:
+            sock.close()
+            self.state.set_text(f"Waiting for the camera service … ({error.strerror or error})")
+            GLib.timeout_add_seconds(2, self.connect)
+            return False
+        self.sock = sock
+        self.buf = b""
+        GLib.io_add_watch(self.sock.fileno(), GLib.IO_IN | GLib.IO_HUP | GLib.IO_ERR,
+                          self.on_readable)
+        return False
+
+    def lost(self, text):
+        """The service went away (it restarts itself): say so and reconnect."""
+        if self.sock:
+            self.sock.close()
+            self.sock = None
+        self.stop_photo_timer()
+        self.set_buttons(False)
+        self.state.set_text(text)
+        GLib.timeout_add_seconds(2, self.connect)
+
+    def close(self, *_args):
+        if self.sock:
+            try:
+                self.sock.sendall(b"stop\n")
+            except OSError:
+                pass
+            self.sock.close()
+            self.sock = None
+        Gtk.main_quit()
+
+    def send(self, text):
+        if self.sock:
+            try:
+                self.sock.sendall(text.encode() + b"\n")
+            except OSError:
+                self.lost("The camera service went away; reconnecting …")
+
+    def on_readable(self, _fd, condition):
+        if not self.sock:
+            return False
+        try:
+            chunk = self.sock.recv(1 << 20)
+        except BlockingIOError:
+            return True
+        except OSError:
+            chunk = b""
+        if not chunk:
+            self.lost("The camera service closed the connection; reconnecting …")
+            return False
+        self.buf += chunk
+        newest = None
+        while len(self.buf) >= 5:
+            kind, length = self.buf[0], struct.unpack("<I", self.buf[1:5])[0]
+            if len(self.buf) < 5 + length:
+                break
+            payload, self.buf = self.buf[5:5 + length], self.buf[5 + length:]
+            if kind == FRAME:
+                newest = payload            # only the newest is shown
+            elif kind == PHOTO:
+                self.save_photo(payload)
+            elif kind == ERROR:
+                self.stop_photo_timer()
+                self.state.set_text(f"Error: {payload.decode(errors='replace')}")
+            elif kind == INFO:
+                self.on_info(payload.decode(errors="replace"))
+        if newest is not None:
+            self.show_frame(newest)
+        return True
+
+    # -- cameras ----------------------------------------------------------------
+
+    def on_info(self, text):
+        lines = text.splitlines()
+        self.cameras = []
+        for line in lines[1:]:
+            facing, orientation = line.split()
+            self.cameras.append((facing, int(orientation)))
+        self.set_buttons(bool(self.cameras))
+        self.start()
+
+    def rotation(self):
+        """Clockwise degrees that make the current camera's picture upright."""
+        key = str(self.current)
+        if key in self.settings.get("rotation", {}):
+            return self.settings["rotation"][key]
+        facing, orientation = self.cameras[self.current]
+        turn = DEVICE_TURN.get(os.environ.get("ROTATION", "counterclockwise"), 90)
+        if facing == "front":
+            return (orientation + turn) % 360
+        return (orientation - turn) % 360
+
+    def start(self):
+        if not self.cameras:
+            return
+        rot = self.rotation()
+        width, height = (360, 480) if rot in (90, 270) else (640, 480)
+        self.frames = 0
+        self.started_at = time.monotonic()
+        facing = self.cameras[self.current][0]
+        self.state.set_text(f"{facing.capitalize()} camera")
+        self.send(f"start {self.current} {width} {height} {rot}")
+
+    def show_frame(self, payload):
+        width, height = struct.unpack("<HH", payload[:4])
+        pixels = GLib.Bytes.new(payload[4:])
+        pixbuf = GdkPixbuf.Pixbuf.new_from_bytes(pixels, GdkPixbuf.Colorspace.RGB, False, 8,
+                                                 width, height, width * 3)
+        if self.cameras and self.cameras[self.current][0] == "front":
+            pixbuf = pixbuf.flip(True)      # like a mirror
+        self.image.set_from_pixbuf(pixbuf)
+        self.frames += 1
+
+    def switch_camera(self, _button):
+        if len(self.cameras) > 1:
+            self.current = (self.current + 1) % len(self.cameras)
+            self.start()
+
+    def turn_more(self, _button):
+        if not self.cameras:
+            return
+        self.settings.setdefault("rotation", {})[str(self.current)] = (self.rotation() + 90) % 360
+        save_settings(self.settings)
+        self.start()
+
+    # -- photos ---------------------------------------------------------------
+
+    def take_photo(self, _button):
+        if not self.cameras:
+            return
+        self.state.set_text("Taking the photo …")
+        self.stop_photo_timer()
+        self.photo_timer = GLib.timeout_add_seconds(15, self.photo_too_slow)
+        self.send(f"photo {self.rotation()}")
+
+    def stop_photo_timer(self):
+        if self.photo_timer:
+            GLib.source_remove(self.photo_timer)
+            self.photo_timer = None
+
+    def photo_too_slow(self):
+        self.photo_timer = None
+        self.state.set_text("No photo came within 15 seconds.")
+        return False
+
+    def folder(self):
+        return self.settings.get("folder") or PICTURES
+
+    def show_where(self):
+        self.where.set_text(f"Saving to: {short(self.folder())}")
+
+    def save_photo(self, jpeg):
+        self.stop_photo_timer()
+        folder = self.folder()
+        problem = folder_problem(folder)
+        if problem:
+            self.state.set_text(f"Not saved: {problem}")
+            return
+        os.makedirs(folder, exist_ok=True)
+        name = time.strftime("IMG_%Y%m%d_%H%M%S.jpg")
+        path = os.path.join(folder, name)
+        try:
+            with open(path, "xb") as f:      # never overwrite (two photos in one second)
+                f.write(jpeg)
+        except FileExistsError:
+            name = time.strftime("IMG_%Y%m%d_%H%M%S") + f"_{time.monotonic_ns() % 1000:03d}.jpg"
+            path = os.path.join(folder, name)
+            try:
+                with open(path, "xb") as f:
+                    f.write(jpeg)
+            except OSError as error:
+                self.state.set_text(f"Error: cannot save ({error.strerror or error})")
+                return
+        except OSError as error:
+            self.state.set_text(f"Error: cannot save ({error.strerror or error})")
+            return
+        self.state.set_text(f"Saved: {short(path)} ({ui.human_size(len(jpeg))})")
+
+    # -- choosing the folder (own list: one tap opens a folder) ---------------
+
+    def folder_page(self):
+        page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12, margin=16)
+        top = Gtk.Box(spacing=12)
+        up = ui.styled(Gtk.Button(label="‹ Up"), "big")
+        up.connect("clicked", self.folder_up)
+        self.path_label = ui.label("", "sub", xalign=0, wrap=True)
+        top.pack_start(up, False, False, 0)
+        top.pack_start(self.path_label, True, True, 0)
+        page.pack_start(top, False, False, 0)
+
+        self.folder_list = Gtk.ListBox()
+        self.folder_list.set_activate_on_single_click(True)
+        self.folder_list.connect("row-activated", self.folder_open)
+        scroll = Gtk.ScrolledWindow()
+        scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        scroll.add(self.folder_list)
+        page.pack_start(scroll, True, True, 0)
+
+        self.folder_error = ui.label("", "sub", xalign=0, wrap=True)
+        page.pack_start(self.folder_error, False, False, 0)
+        bottom = Gtk.Box(spacing=12)
+        use = ui.styled(Gtk.Button(label="Use this folder"), "big", "accent")
+        cancel = ui.styled(Gtk.Button(label="Cancel"), "big")
+        use.connect("clicked", self.folder_use)
+        cancel.connect("clicked", lambda _b: self.pages.set_visible_child_name("camera"))
+        bottom.pack_start(use, False, False, 0)
+        bottom.pack_start(cancel, False, False, 0)
+        page.pack_start(bottom, False, False, 0)
+        self.browsing = HOME
+        return page
+
+    def choose_folder(self, _button):
+        current = self.folder()
+        self.browsing = current if os.path.isdir(current) else HOME
+        self.fill_folders()
+        self.pages.set_visible_child_name("folders")
+
+    def fill_folders(self):
+        self.path_label.set_text(short(self.browsing))
+        self.folder_error.set_text("")
+        for row in self.folder_list.get_children():
+            self.folder_list.remove(row)
+        try:
+            names = sorted((e.name for e in os.scandir(self.browsing)
+                            if e.is_dir() and not e.name.startswith(".")), key=str.lower)
+        except OSError as error:
+            names = []
+            self.folder_error.set_text(f"Cannot read this folder ({error.strerror or error})")
+        for name in names:
+            row = Gtk.ListBoxRow()
+            text = ui.label(f"{name}  ›", "sub", xalign=0)
+            text.set_margin_top(12)
+            text.set_margin_bottom(12)
+            text.set_margin_start(12)
+            row.add(text)
+            row.folder = os.path.join(self.browsing, name)
+            self.folder_list.add(row)
+        if not names and not self.folder_error.get_text():
+            self.folder_error.set_text("No folders inside.")
+        self.folder_list.show_all()
+
+    def folder_open(self, _list, row):
+        self.browsing = row.folder
+        self.fill_folders()
+
+    def folder_up(self, _button):
+        parent = os.path.dirname(self.browsing)
+        if self.browsing != HOME and parent.startswith(HOME):
+            self.browsing = parent
+            self.fill_folders()
+
+    def folder_use(self, _button):
+        problem = folder_problem(self.browsing)
+        if problem:
+            self.folder_error.set_text(problem)
+            return
+        self.settings["folder"] = self.browsing
+        save_settings(self.settings)
+        self.show_where()
+        self.pages.set_visible_child_name("camera")
+
+
+def short(path):
+    """~/... for display."""
+    return "~" + path[len(HOME):] if path == HOME or path.startswith(HOME + "/") else path
+
+
+def folder_problem(folder):
+    """Why photos cannot go to FOLDER, or None."""
+    real = os.path.realpath(folder)
+    if real == TRANSFER or real.startswith(TRANSFER + "/"):
+        if not os.path.ismount(TRANSFER):
+            return ("the Transfer drive is with the computer; take it back in Transfer, "
+                    "or choose another folder.")
+    if os.path.isdir(folder) and not os.access(folder, os.W_OK):
+        return "this folder cannot be written to."
+    return None
+
+
+def main():
+    ui.apply_style()
+    app = Camera()
+    app.window.show_all()
+    Gtk.main()
+
+
+if __name__ == "__main__":
+    main()

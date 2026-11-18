@@ -92,6 +92,13 @@ cmd_tools() {
     install_file build/arm/tb-chroot tb-chroot 700
     install_file build/arm/tb-linuxd tb-linuxd 700
     install_file build/arm/tb-sysd tb-sysd 700
+    # the camera service needs the Android NDK to build (make android); without
+    # it the Linux system simply has no camera
+    if make android >/dev/null 2>&1; then
+        install_file build/android/tb-camera tb-camera 700
+    else
+        say "no Android NDK: tb-camera not built, the camera stays off (see Makefile)"
+    fi
     install_file tablet/linux-root.sh linux-root.sh 700
     push_checked build/arm/tb-linux "$T/tb-linux"
     adb shell "chmod 755 $T/tb-linux"
@@ -157,7 +164,8 @@ cmd_overlay() {
     # the files from linux/overlay plus what is built for the system
     rm -rf build/linux/overlay-stage
     cp -a linux/overlay build/linux/overlay-stage
-    install -m 644 build/arm/libtablet-fbfix.so build/linux/overlay-stage/usr/local/lib/tablet/
+    install -m 644 build/arm/libtablet-fbfix.so build/arm/libtablet-gtktouch.so \
+        build/linux/overlay-stage/usr/local/lib/tablet/
     tar --owner=0 --group=0 --numeric-owner -C build/linux/overlay-stage -cf build/linux/overlay.tar .
     push_checked build/linux/overlay.tar "$T/linux-overlay.tar"
     root "sh $D/linux-root.sh overlay $T/linux-overlay.tar; rm $T/linux-overlay.tar"

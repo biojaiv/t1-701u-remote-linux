@@ -1,0 +1,112 @@
+#!/usr/bin/python3
+"""The "ABC" tab at the right edge: one tap opens the on-screen keyboard
+(onboard), the next closes it; like the tab in the remote control.
+
+It replaces onboard's own floating button. The tab is a popup window
+(override-redirect): it never takes the input focus, so the text field that
+was tapped keeps it and the typing goes there. Programs that open later are
+stacked above it by X, so it raises itself twice a second. The keyboard is
+switched over onboard's D-Bus interface; the tab is blue while the keyboard is
+open. Started by tablet-session after tablet-onboard.
+"""
+import gi
+
+gi.require_version("Gdk", "3.0")
+gi.require_version("Gtk", "3.0")
+from gi.repository import Gdk, Gio, GLib, Gtk  # noqa: E402
+
+WIDTH, HEIGHT = 50, 120
+BUS_NAME = "org.onboard.Onboard"
+PATH = "/org/onboard/Onboard/Keyboard"
+INTERFACE = "org.onboard.Onboard.Keyboard"
+CSS = b"""
+window.abc-tab { background-color: transparent; }
+button.abc-tab {
+    background-image: none;
+    background-color: rgb(24, 33, 56);
+    border: 1px solid rgb(44, 58, 92);
+    border-right-width: 0;
+    border-radius: 18px 0 0 18px;
+    box-shadow: none;
+    padding: 0;
+}
+button.abc-tab.open, button.abc-tab:active {
+    background-color: rgb(37, 99, 235);
+    border-color: rgb(96, 165, 250);
+}
+button.abc-tab label { color: rgb(240, 244, 250); font-size: 17px; font-weight: bold; }
+"""
+
+
+class Tab:
+    def __init__(self):
+        self.bus = Gio.bus_get_sync(Gio.BusType.SESSION, None)
+        provider = Gtk.CssProvider()
+        provider.load_from_data(CSS)
+        Gtk.StyleContext.add_provider_for_screen(Gdk.Screen.get_default(), provider,
+                                                 Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+        self.window = Gtk.Window(type=Gtk.WindowType.POPUP)
+        self.window.get_style_context().add_class("abc-tab")
+        self.window.set_accept_focus(False)
+        self.button = Gtk.Button(label="A\nB\nC")     # letters one under the other
+        self.button.get_child().set_justify(Gtk.Justification.CENTER)
+        self.button.get_style_context().add_class("abc-tab")
+        self.button.set_can_focus(False)
+        self.button.connect("clicked", self.toggle)
+        self.window.add(self.button)
+        self.window.set_default_size(WIDTH, HEIGHT)
+        self.place()
+        Gdk.Screen.get_default().connect("size-changed", lambda _s: self.place())
+        self.window.show_all()
+        GLib.timeout_add(500, self.keep_on_top)
+
+    def place(self):
+        """Right edge, in the middle, in landscape and portrait (above the
+        keyboard, which covers the bottom 205 pixels)."""
+        screen = Gdk.Screen.get_default()
+        width, height = screen.get_width(), screen.get_height()
+        self.window.move(width - WIDTH, max(0, (height - HEIGHT) // 2))
+
+    def call(self, method):
+        try:
+            self.bus.call_sync(BUS_NAME, PATH, INTERFACE, method, None, None,
+                               Gio.DBusCallFlags.NONE, 2000, None)
+        except GLib.Error:
+            pass                         # onboard not (yet) running
+
+    def visible(self):
+        try:
+            reply = self.bus.call_sync(BUS_NAME, PATH, "org.freedesktop.DBus.Properties", "Get",
+                                       GLib.Variant("(ss)", (INTERFACE, "Visible")), None,
+                                       Gio.DBusCallFlags.NONE, 1000, None)
+            return bool(reply.unpack()[0])
+        except GLib.Error:
+            return None
+
+    def toggle(self, _button):
+        self.call("ToggleVisible")
+        GLib.timeout_add(300, self.show_state)
+
+    def show_state(self):
+        context = self.button.get_style_context()
+        if self.visible():
+            context.add_class("open")
+        else:
+            context.remove_class("open")
+        return False
+
+    def keep_on_top(self):
+        gdk_window = self.window.get_window()
+        if gdk_window:
+            gdk_window.raise_()
+        self.show_state()                # closed with onboard's own X key, too
+        return True
+
+
+def main():
+    Tab()
+    Gtk.main()
+
+
+if __name__ == "__main__":
+    main()

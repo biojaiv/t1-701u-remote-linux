@@ -1,8 +1,13 @@
-# Defaults for the tablet (there is no dconf: gsettings keeps changes only in
-# memory, so the defaults are what counts). Compiled by setup.sh ui.
+# Defaults for the tablet. Compiled by setup.sh ui. dconf is installed: a
+# value a program saves there (for example after moving the keyboard button)
+# wins over these defaults.
 
-# onboard: appears by itself at text fields (needs at-spi2), docked at the
-# bottom like a phone keyboard, dark, no tray icon (there is no tray)
+# onboard: opened and closed with the "ABC" tab at the right edge
+# (tablet-keyboard-tab, over onboard's D-Bus), a floating window across the bottom of the screen, dark, no tray icon (there
+# is no tray). Neither auto-show nor docking: with matchbox, the docked
+# keyboard mapped and unmapped its window about six times a second (recorded
+# with xev, 2026-11-18), seen as fast blinking after closing it; floating at
+# the same place it maps once and unmaps once (tested over onboard's D-Bus).
 [org.onboard]
 layout='Compact'
 theme='Nightshade'
@@ -10,22 +15,32 @@ show-status-icon=false
 start-minimized=true
 
 [org.onboard.auto-show]
-enabled=true
-# do not move windows out of its way: with matchbox, moving and resizing the
-# full-screen program on every show and hide fed focus changes back to
-# auto-show; hiding the keyboard then made it blink instead of going away
+enabled=false
+# in case auto-show is switched on again: do not move windows out of its way
+# (moving the full-screen program fed focus changes back to auto-show)
 reposition-method-docked='none'
 reposition-method-floating='none'
 
 [org.onboard.window]
-docking-enabled=true
-docking-edge='bottom'
-# lies over the program instead of shrinking it (see above)
+docking-enabled=false
 docking-shrink-workarea=false
 force-to-top=true
+# no frame handles: a finger would move or resize it by accident
+window-handles=''
 
+# 1024x600 screen (landscape) or 600x1024: the keyboard over the bottom part
 [org.onboard.window.landscape]
-dock-expand=true
+x=0
+y=395
+width=1024
+height=205
 
+[org.onboard.window.portrait]
+x=0
+y=819
+width=600
+height=205
+
+# onboard's own floating button: replaced by the "ABC" tab
 [org.onboard.icon-palette]
 in-use=false

@@ -80,7 +80,9 @@ scripts/linux.sh install         # Android running; copies 1.9 GB over Wi-Fi, se
 ```
 
 The download is checked against Devuan's signing key. Afterwards the start screen shows a
-**"Linux"** tile. Copy an ISO image for the USB installer with `scripts/linux.sh iso-send FILE`.
+**"Linux"** tile. For the **camera** in Linux, install the Android NDK r25c once (with the Android
+SDK's `sdkmanager --install "ndk;25.2.9519653"`, or set `NDK=` to where it is) and run
+`scripts/linux.sh tools`; without it everything else works, only the camera is missing. Copy an ISO image for the USB installer with `scripts/linux.sh iso-send FILE`.
 Everything about it, including updates, is in [LINUX.md](LINUX.md).
 
 ## 7. Optional: more free space on Android

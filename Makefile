@@ -25,7 +25,7 @@ TABLETD_HDR := tablet/tabletd.h tablet/font_aa.h $(MONOCYPHER)/monocypher.h
 
 BUILD := build
 
-.PHONY: all x86 arm test push clean
+.PHONY: all x86 arm android test push clean
 
 all: x86 arm
 
@@ -35,7 +35,7 @@ x86: $(BUILD)/x86/tabletd $(BUILD)/x86/tb-home $(BUILD)/x86/lz4cli $(BUILD)/x86/
 arm: $(BUILD)/arm/tabletd $(BUILD)/arm/tb-home $(BUILD)/arm/tb-rootd $(BUILD)/arm/tb-su \
      $(BUILD)/arm/tb-keyheld $(BUILD)/arm/tb-linuxd $(BUILD)/arm/tb-linux $(BUILD)/arm/tb-chroot \
      $(BUILD)/arm/tb-fetch $(BUILD)/arm/libtablet-fbfix.so $(BUILD)/arm/tb-sysd \
-     $(BUILD)/arm/tb-blkro $(BUILD)/arm/tb-detach $(BUILD)/arm/tb-audio
+     $(BUILD)/arm/tb-blkro $(BUILD)/arm/tb-detach $(BUILD)/arm/tb-audio $(BUILD)/arm/libtablet-gtktouch.so
 
 # sound on the tablet (tinyalsa, see audio.c)
 $(BUILD)/x86/tb-audio: $(AUDIO_SRC)
@@ -148,6 +148,12 @@ $(BUILD)/arm/libtablet-fbfix.so: tablet/xfbfix.c
 	$(CC_ARM) -std=gnu11 -O2 -Wall -Wextra -Werror -shared -fPIC -march=armv7-a -mfpu=neon-vfpv4 \
 	    -mfloat-abi=hard -fstack-protector-strong -Wl,-z,relro,-z,now -o $@ $<
 
+# GTK 3 module for the Linux system: one tap in file dialogs (see gtktouch.c)
+$(BUILD)/arm/libtablet-gtktouch.so: tablet/gtktouch.c
+	@mkdir -p $(dir $@)
+	$(CC_ARM) -std=gnu11 -O2 -Wall -Wextra -Werror -shared -fPIC -march=armv7-a -mfpu=neon-vfpv4 \
+	    -mfloat-abi=hard -fstack-protector-strong -Wl,-z,relro,-z,now -o $@ $<
+
 test: x86
 	python3 -m unittest discover -s tests -p 'test_*.py' -v
 
@@ -156,3 +162,17 @@ push: arm
 
 clean:
 	rm -rf $(BUILD)
+
+# The camera service runs Android's camera driver, a bionic library, so it is
+# built with the Android NDK r25c (the last one for Android 4.4, API 19).
+# Optional: "make android"; scripts/linux.sh tools uses it if the NDK is there.
+NDK ?= $(HOME)/Android/Sdk/ndk/25.2.9519653
+NDK_CC := $(NDK)/toolchains/llvm/prebuilt/linux-x86_64/bin/armv7a-linux-androideabi19-clang
+AOSP_HDR := third_party/aosp-4.4.2-headers
+
+android: $(BUILD)/android/tb-camera
+
+$(BUILD)/android/tb-camera: tablet/camera/camera.c
+	@test -x $(NDK_CC) || { echo "make android: no NDK r25c at $(NDK) (set NDK=...)"; exit 1; }
+	@mkdir -p $(dir $@)
+	$(NDK_CC) -O2 -Wall -Wextra -Werror -isystem $(AOSP_HDR) -o $@ $< -ldl
